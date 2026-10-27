@@ -22,6 +22,28 @@ export interface DispatcherOptions {
 export const DEFAULT_BACKOFF_SECONDS = [60, 300, 900, 3600, 10_800, 21_600];
 export const DEFAULT_MAX_ATTEMPTS = 7;
 
+export interface AlertDrainOptions {
+  /** Depois deste instante não se reivindicam mais eventos. */
+  deadlineMs: number;
+  /** Depois deste instante se desiste de esperar envios em andamento. */
+  hardDeadlineMs: number;
+  signal?: AbortSignal;
+}
+
+export interface AlertDrainResult {
+  sent: number;
+  /** Falhou agora e será tentado de novo numa próxima rodada (esperado quando o provedor oscila). */
+  retried: number;
+  /** Esgotou as tentativas (status FAILED). */
+  failed: number;
+  /** Falha de contabilidade no banco depois do envio: o lease expira e o reenvio usa a mesma Idempotency-Key. */
+  errors: number;
+  timedOut: boolean;
+  aborted: boolean;
+}
+
+type DeliverOutcome = "sent" | "retry" | "failed" | "gone" | "error";
+
 interface Claimed {
   id: string;
   attempts: number;
@@ -95,12 +117,51 @@ export class AlertDispatcher {
       });
       const limit = Math.min(this.o.concurrency - this.inFlight.size, this.o.maxPerHour - sentLastHour - this.inFlight.size);
       if (limit <= 0) return;
-      for (const c of await this.claim(limit)) this.track(this.deliver(c));
+      for (const c of await this.claim(limit)) this.track(this.deliver(c).then(() => undefined));
     } catch (err) {
       this.log.error({ err }, "alert dispatcher tick failed");
     } finally {
       this.claiming = false;
     }
+  }
+
+  /**
+   * Processa a outbox SEM timers: reivindica eventos devidos (inclusive retentativas cujo prazo já passou), envia e
+   * repete até não haver mais nada devido, o prazo acabar ou o teto por hora ser atingido. Os retardos de retentativa
+   * (1 min, 5 min, ...) continuam valendo: um evento que falhou agora só volta numa rodada futura.
+   * Mesmas garantias de unicidade do loop: SKIP LOCKED + lease + Idempotency-Key.
+   */
+  async drain(o: AlertDrainOptions): Promise<AlertDrainResult> {
+    const r: AlertDrainResult = { sent: 0, retried: 0, failed: 0, errors: 0, timedOut: false, aborted: false };
+    try {
+      for (;;) {
+        if (o.signal?.aborted) { r.aborted = true; break; }
+        if (Date.now() >= o.deadlineMs) { r.timedOut = true; break; }
+        const sentLastHour = await this.db.alertEvent.count({ where: { status: "SENT", sentAt: { gte: new Date(Date.now() - 3_600_000) } } });
+        const limit = Math.min(this.o.concurrency, this.o.maxPerHour - sentLastHour);
+        if (limit <= 0) break; // teto por hora: o excedente espera, sem gastar tentativas
+        const claimed = await this.claim(limit);
+        if (claimed.length === 0) break;
+
+        let timer: NodeJS.Timeout | undefined;
+        const outcomes = await Promise.race([
+          Promise.all(claimed.map((c) => this.deliver(c))),
+          new Promise<null>((res) => { timer = setTimeout(() => res(null), Math.max(0, o.hardDeadlineMs - Date.now())); }),
+        ]);
+        clearTimeout(timer);
+        if (outcomes === null) { r.timedOut = true; break; } // o lease expira sozinho; outra rodada retoma
+        for (const k of outcomes) {
+          if (k === "sent") r.sent++;
+          else if (k === "retry") r.retried++;
+          else if (k === "failed") r.failed++;
+          else if (k === "error") r.errors++;
+        }
+      }
+    } catch (err) {
+      r.errors++;
+      this.log.error({ err }, "alert drain failed");
+    }
+    return r;
   }
 
   private claim(limit: number): Promise<Claimed[]> {
@@ -133,7 +194,7 @@ export class AlertDispatcher {
     });
   }
 
-  private async deliver({ id, attempts }: Claimed): Promise<void> {
+  private async deliver({ id, attempts }: Claimed): Promise<DeliverOutcome> {
     try {
       const event = await this.db.alertEvent.findUnique({
         where: { id },
@@ -142,7 +203,7 @@ export class AlertDispatcher {
           incident: { select: { monitorId: true, startedAt: true, resolvedAt: true, monitor: { select: { name: true } } } },
         },
       });
-      if (!event) return; // incidente/monitor excluído: o alerta perdeu o sentido
+      if (!event) return "gone"; // incidente/monitor excluído: o alerta perdeu o sentido
 
       const cause = await this.db.checkResult.findFirst({
         where: { monitorId: event.incident.monitorId, success: false, checkedAt: { lte: event.incident.startedAt } },
@@ -171,21 +232,22 @@ export class AlertDispatcher {
           data: { status: "SENT", sentAt: new Date(), providerMessageId: result.messageId, lockedUntil: null, lastErrorKind: null },
         });
         this.log.info({ alertEventId: id, kind: event.kind, attempts }, "alert sent");
-        return;
+        return "sent";
       }
-      await this.recordFailure(id, event.kind, attempts, result.kind, result.httpStatus);
+      return await this.recordFailure(id, event.kind, attempts, result.kind, result.httpStatus);
     } catch (err) {
       // Ex.: o provedor aceitou o e-mail mas o banco falhou ao registrar. O lease expira e o evento será
       // reenviado com a MESMA Idempotency-Key, então o provedor não entrega duas vezes.
       this.log.error({ err, alertEventId: id }, "alert delivery bookkeeping failed");
+      return "error";
     }
   }
 
-  private async recordFailure(id: string, kind: string, attempts: number, errorKind: SendFailureKind, httpStatus?: number): Promise<void> {
+  private async recordFailure(id: string, kind: string, attempts: number, errorKind: SendFailureKind, httpStatus?: number): Promise<DeliverOutcome> {
     if (attempts >= this.o.maxAttempts) {
       await this.db.alertEvent.updateMany({ where: { id, status: "PENDING" }, data: { status: "FAILED", lockedUntil: null, lastErrorKind: errorKind } });
       this.log.error({ alertEventId: id, kind, attempts, errorKind, httpStatus }, "alert permanently failed (retry limit reached)");
-      return;
+      return "failed";
     }
     const wait = this.o.backoffSeconds[Math.min(attempts - 1, this.o.backoffSeconds.length - 1)] ?? 60;
     await this.db.$executeRaw`
@@ -195,5 +257,6 @@ export class AlertDispatcher {
           next_attempt_at = (now() AT TIME ZONE 'UTC') + make_interval(secs => ${wait}::double precision)
       WHERE id = ${id}::uuid AND status = 'PENDING'`;
     this.log.warn({ alertEventId: id, kind, attempts, errorKind, httpStatus, retryInSeconds: wait }, "alert delivery failed, will retry");
+    return "retry";
   }
 }

@@ -58,7 +58,7 @@ export function PublicLayout() {
       </main>
       <footer className="site-footer">
         <div className="container">
-          <p>O estado dos sistemas é atualizado sozinho a cada 30 segundos, sem recarregar a página.</p>
+          <p>A página se atualiza sozinha. As checagens, porém, acontecem em rodadas agendadas (de poucos em poucos minutos, conforme o plano de hospedagem), então uma queda pode levar esse tempo para aparecer.</p>
           <p>Uptime é a razão entre checagens bem-sucedidas e checagens realizadas. Períodos sem checagem não entram na conta.</p>
         </div>
       </footer>

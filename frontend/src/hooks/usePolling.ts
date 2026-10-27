@@ -103,3 +103,15 @@ export function useNow(everyMs = 5000): number {
   }, [everyMs]);
   return now;
 }
+
+/** true quando `active` permanece verdadeiro por `ms` (ex.: aviso de "servidor acordando" após uma espera longa). */
+export function useAfter(ms: number, active: boolean): boolean {
+  const [elapsed, setElapsed] = useState(false);
+  useEffect(() => {
+    setElapsed(false);
+    if (!active) return;
+    const t = setTimeout(() => setElapsed(true), ms);
+    return () => clearTimeout(t);
+  }, [ms, active]);
+  return active && elapsed;
+}

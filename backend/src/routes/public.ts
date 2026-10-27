@@ -3,13 +3,13 @@ import { z } from "zod";
 import { publicState, uptimeWindow, type PublicState, type UptimeWindow } from "../domain/public-state.js";
 import { cursorSchema, encodeCursor, paginate } from "../lib/cursor.js";
 import type { Db } from "../lib/db.js";
+import type { PublicCache } from "../lib/public-cache.js";
 import { notFound } from "../lib/errors.js";
 
 const HISTORY_DEFAULT = 50;
 const HISTORY_MAX = 200;
 const INCIDENTS_DEFAULT = 20;
 const INCIDENTS_MAX = 100;
-const PUBLIC_CACHE = "public, max-age=10";
 
 interface PublicMonitor {
   id: string;
@@ -25,7 +25,10 @@ interface PublicMonitor {
  * Leitura pública. Nunca expõe URL, mensagens de erro brutas, contagem interna de falhas nem
  * agendamento: só nome, estado, métricas e a categoria sanitizada de falha (errorKind).
  */
-export function publicRoutes(app: FastifyInstance, db: Db): void {
+export function publicRoutes(app: FastifyInstance, db: Db, opts: { cache: PublicCache; checkRoundsEveryMinutes: number | null }): void {
+  const { cache } = opts;
+  const cacheControl = `public, max-age=${cache.enabled ? cache.ttlSeconds : 10}`;
+  const PUBLIC_CACHE = cacheControl;
   async function loadMonitors(onlyId?: string): Promise<PublicMonitor[]> {
     const monitors = await db.monitor.findMany({
       where: onlyId ? { id: onlyId } : undefined,
@@ -80,14 +83,22 @@ export function publicRoutes(app: FastifyInstance, db: Db): void {
 
   app.get("/public/status", async (_req, reply) => {
     reply.header("cache-control", PUBLIC_CACHE);
-    return { generatedAt: new Date(), monitors: await loadMonitors() };
+    // `generatedAt` é sempre o relógio do servidor AGORA (mesmo com cache): é a referência de tempo do frontend.
+    // `checkRounds` diz que as checagens acontecem em rodadas agendadas (worker externo) e de quanto em quanto tempo;
+    // null = scheduler interno, sem rodadas.
+    const monitors = await cache.wrap("status", () => loadMonitors());
+    return {
+      generatedAt: new Date(),
+      checkRounds: opts.checkRoundsEveryMinutes ? { everyMinutes: opts.checkRoundsEveryMinutes } : null,
+      monitors,
+    };
   });
 
   const idParams = z.object({ id: z.uuid() });
 
   app.get("/public/monitors/:id", async (req, reply) => {
     const { id } = idParams.parse(req.params);
-    const [monitor] = await loadMonitors(id);
+    const [monitor] = await cache.wrap(`monitor:${id}`, () => loadMonitors(id), (v) => v.length > 0);
     if (!monitor) throw notFound("Monitor não encontrado");
     reply.header("cache-control", PUBLIC_CACHE);
     return monitor;
@@ -101,6 +112,7 @@ export function publicRoutes(app: FastifyInstance, db: Db): void {
   app.get("/public/monitors/:id/history", async (req, reply) => {
     const { id } = idParams.parse(req.params);
     const { limit, cursor } = historyQuery.parse(req.query);
+    const body = await cache.wrap(req.url, async () => {
     const exists = await db.monitor.findUnique({ where: { id }, select: { id: true } });
     if (!exists) throw notFound("Monitor não encontrado");
 
@@ -114,12 +126,14 @@ export function publicRoutes(app: FastifyInstance, db: Db): void {
       select: { id: true, checkedAt: true, success: true, statusCode: true, latencyMs: true, errorKind: true },
     });
     const { items, nextCursor } = paginate(rows, limit, (r) => encodeCursor(r.checkedAt, r.id));
-    reply.header("cache-control", PUBLIC_CACHE);
     return {
       monitorId: id,
       checks: items.map(({ id: _id, ...check }) => check),
       nextCursor,
     };
+    });
+    reply.header("cache-control", PUBLIC_CACHE);
+    return body;
   });
 
   const incidentsQuery = z.object({
@@ -131,6 +145,7 @@ export function publicRoutes(app: FastifyInstance, db: Db): void {
 
   app.get("/public/incidents", async (req, reply) => {
     const { limit, cursor, monitorId, status } = incidentsQuery.parse(req.query);
+    const body = await cache.wrap(req.url, async () => {
     const rows = await db.incident.findMany({
       where: {
         ...(monitorId && { monitorId }),
@@ -143,7 +158,6 @@ export function publicRoutes(app: FastifyInstance, db: Db): void {
       select: { id: true, monitorId: true, startedAt: true, resolvedAt: true, monitor: { select: { name: true } } },
     });
     const { items, nextCursor } = paginate(rows, limit, (r) => encodeCursor(r.startedAt, r.id));
-    reply.header("cache-control", PUBLIC_CACHE);
     return {
       incidents: items.map((i) => ({
         id: i.id,
@@ -156,5 +170,8 @@ export function publicRoutes(app: FastifyInstance, db: Db): void {
       })),
       nextCursor,
     };
+    });
+    reply.header("cache-control", PUBLIC_CACHE);
+    return body;
   });
 }

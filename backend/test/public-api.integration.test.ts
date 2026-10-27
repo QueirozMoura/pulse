@@ -234,7 +234,8 @@ describe.skipIf(!TEST_DB_URL)("API pública (PostgreSQL real)", () => {
   describe("nada de interno nas rotas públicas", () => {
     // Contrato fechado: qualquer campo novo numa rota pública quebra este teste até ser decidido de forma consciente.
     const ALLOWED_KEYS = new Set([
-      "status", "scheduler", // /health
+      "status", "scheduler", "worker", "lastSuccessAt", "ageSeconds", "expectedEveryMinutes", "lateAfterMinutes", "lastRun", // /health
+      "checkRounds", "everyMinutes", // /public/status
       "generatedAt", "monitors", "id", "name", "state", "monitoringSince", "lastCheck", "ongoingIncident", "uptime",
       "checkedAt", "success", "statusCode", "latencyMs", "errorKind", "startedAt", "last24h", "last7d", "checks", "successfulChecks", "percentage",
       "monitorId", "nextCursor", "incidents", "monitorName", "resolvedAt", "durationSeconds",

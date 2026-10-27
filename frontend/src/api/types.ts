@@ -31,6 +31,8 @@ export interface PublicMonitor {
 
 export interface PublicStatusResponse {
   generatedAt: string;
+  /** Checagens em rodadas agendadas (worker externo): cadência prevista, não garantida. null = checagem contínua. */
+  checkRounds: { everyMinutes: number } | null;
   monitors: PublicMonitor[];
 }
 
@@ -59,6 +61,8 @@ export interface SessionInfo {
   username: string;
   csrfToken: string;
   expiresAt: string;
+  /** Limites do servidor (ex.: menor intervalo aceito). Ausente em servidores antigos. */
+  limits?: { minIntervalSeconds: number; maxMonitors: number };
 }
 
 /** Monitor administrativo (inclui a URL: nunca use nas telas públicas). */

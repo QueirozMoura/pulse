@@ -2,11 +2,13 @@ import { useState, type FormEvent } from "react";
 import { adminApi } from "../../api/endpoints";
 import type { AdminMonitor, MonitorInput } from "../../api/types";
 import { Notice } from "../../components/feedback";
+import { useAuth } from "../../auth/AuthContext";
 import { Modal } from "../../components/Modal";
 import { describeError, type Described } from "../../lib/errorText";
 import { formatDuration } from "../../lib/format";
 
-const PRESETS = [30, 60, 120, 300, 600, 900, 1800, 3600, 21_600, 86_400];
+const PRESETS = [30, 60, 120, 300, 600, 900, 1800, 3600, 10_800, 21_600, 43_200, 86_400];
+const DEFAULT_MIN_INTERVAL = 30;
 
 export function intervalLabel(s: number) {
   return s === 60 ? "1 minuto" : `${formatDuration(s)}`.replace(/^(\d+) min$/, (_m, n) => `${n} ${Number(n) === 1 ? "minuto" : "minutos"}`);
@@ -33,12 +35,16 @@ function FormBody({ target, onClose, onSaved, onSessionProblem }: Omit<Props, "t
   const editing = target !== "new" ? target : null;
   const [name, setName] = useState(editing?.name ?? "");
   const [url, setUrl] = useState(editing?.url ?? "https://");
-  const [interval, setIntervalSeconds] = useState(editing?.intervalSeconds ?? 60);
+  const { state: auth } = useAuth();
+  // O menor intervalo vem do servidor: no plano gratuito as checagens são em rodadas de 15 min, então 30 s não existe.
+  const minInterval = (auth.status === "authenticated" && auth.user.limits?.minIntervalSeconds) || DEFAULT_MIN_INTERVAL;
+  const presets = PRESETS.filter((s) => s >= minInterval);
+  const [interval, setIntervalSeconds] = useState(editing?.intervalSeconds ?? (presets.find((s) => s >= 60) ?? presets[0] ?? minInterval));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Described | null>(null);
   const [local, setLocal] = useState<Record<string, string>>({});
 
-  const options = PRESETS.includes(interval) ? PRESETS : [...PRESETS, interval].sort((a, b) => a - b);
+  const options = presets.includes(interval) ? presets : [...presets, interval].sort((a, b) => a - b);
   const fieldError = (k: string) => local[k] ?? error?.fields[k];
 
   const onSubmit = async (e: FormEvent) => {
@@ -103,6 +109,10 @@ function FormBody({ target, onClose, onSaved, onSessionProblem }: Omit<Props, "t
         <select id="mf-interval" value={interval} onChange={(e) => setIntervalSeconds(Number(e.target.value))} aria-invalid={Boolean(fieldError("intervalSeconds"))} aria-describedby={fieldError("intervalSeconds") ? "mf-int-err" : undefined}>
           {options.map((s) => <option key={s} value={s}>{intervalLabel(s)}</option>)}
         </select>
+        <p className="field__hint">
+          Menor intervalo aceito: {intervalLabel(minInterval)}.
+          {minInterval >= 600 ? " As checagens rodam em rodadas agendadas: o horário exato pode atrasar alguns minutos." : ""}
+        </p>
         {fieldError("intervalSeconds") && <p id="mf-int-err" className="field__error">{fieldError("intervalSeconds")}</p>}
       </div>
 

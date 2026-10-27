@@ -31,7 +31,8 @@ npm run dev                          # http://localhost:5173
 - Página pública: <http://localhost:5173/> (detalhe de um sistema em `/s/<id>`).
 - Painel: <http://localhost:5173/admin> (login com o usuário criado acima). Não há link para o painel na página pública, de propósito.
 - Para ver o ciclo completo rápido, suba o backend com `MIN_INTERVAL_SECONDS=2 CHECK_TIMEOUT_MS=1500` e cadastre monitores com
-  intervalo curto (o formulário oferece 30 s ou mais; intervalos menores só pela API).
+  intervalo curto (o formulário oferece o menor intervalo que o **servidor** informa em `limits.minIntervalSeconds`, 30 s por padrão;
+  intervalos menores só pela API). No modo gratuito de produção o servidor informa 15 min e o formulário só oferece 15 min ou mais.
 
 **Use `localhost` nos dois lados**, não `127.0.0.1`. O cookie de sessão é `SameSite=Strict`: `localhost:5173` e `localhost:3000`
 são o mesmo *site*, mas `127.0.0.1` e `localhost` não são, e o navegador descartaria o cookie.
@@ -120,10 +121,14 @@ acrescentou o visual correspondente a cada uma:
 | Uptime sem checagens | "Sem dados" e barra hachurada (nunca 0% nem 100%); com checagens, sempre "de N checagens" |
 | Disponibilidade geral das 24 h | Ponderada pelas checagens reais de cada sistema, com a amostra; "Sem dados" se nenhuma |
 
-Atualização periódica: `usePolling` busca a cada 30 s, pausa com a aba oculta, atualiza ao voltar e, após falhas, espera mais (até 1 min).
+Atualização periódica: `usePolling` busca a cada `VITE_POLL_SECONDS` (padrão 60 s; recomendado 600 no plano gratuito), pausa com a aba oculta,
+atualiza ao voltar e, após falhas, espera mais (até 1 min). Se a primeira carga passar de 8 s, aparece o aviso "O servidor está acordando"
+(a API gratuita da Render dorme quando ninguém a usa).
 As idades usam o relógio do **servidor** (`generatedAt` + tempo decorrido) na lista; um relógio local errado não faz uma checagem recente parecer velha.
 A API pública **não expõe o intervalo de checagem**, então "atrasada" usa uma estimativa da cadência (janela observada ÷ checagens de 24 h;
-mínimo de 2 min e 3 intervalos de tolerância). A página de detalhe não recebe `generatedAt` e usa o relógio do navegador.
+mínimo de 2 min e 3 intervalos de tolerância; sem amostra suficiente, 1 h, o que cabe várias rodadas de 15 min mesmo atrasadas).
+A resposta de `/public/status` traz `checkRounds: { everyMinutes }` quando as checagens são feitas por um worker agendado: a barra "ao vivo"
+então mostra a idade da checagem mais recente e avisa que o horário das rodadas não é exato. Nada promete "tempo real". A página de detalhe não recebe `generatedAt` e usa o relógio do navegador.
 
 A página pública **nunca** mostra URLs monitoradas nem dados administrativos: elas não existem nas respostas públicas, e um teste confere o DOM.
 
@@ -156,9 +161,18 @@ docs/screenshots/{before,after}/{desktop,mobile}/   36 telas e estados por vers�
 Dependências de runtime: `react`, `react-dom`, `react-router-dom`, `motion` (reordenação por layout, entradas), `lucide-react` (ícones de ação) e duas
 famílias de fonte autohospedadas. Gráficos, polling, cliente HTTP e estado são código do projeto.
 
-## Produção (nada foi implantado)
+## Produção gratuita (nada foi implantado)
 
-- Defina `VITE_API_URL` **na hora do build** e sirva `dist/` como site estático com *fallback* para `index.html` (as rotas são do lado do cliente).
-- Mantenha frontend e API no **mesmo site** (ex.: `app.exemplo.com` e `api.exemplo.com`): o cookie é `SameSite=Strict` e `__Host-`/`Secure`.
-  No backend, `CORS_ALLOWED_ORIGIN=https://app.exemplo.com` e `TRUST_PROXY_HOPS` conforme o proxy.
+Os domínios gratuitos de hospedagem (`onrender.com`, `netlify.app`, `pages.dev`, `vercel.app`, `github.io`...) estão na *Public Suffix List*: dois
+subdomínios deles são **sites diferentes** para o navegador, então o cookie `SameSite=Strict` da sessão não viaja do site estático para a API.
+Sem afrouxar a segurança, a arquitetura gratuita é híbrida:
+
+- **Página pública** no site estático: `VITE_API_URL=https://<sua-api>.onrender.com` e, na API, `CORS_ALLOWED_ORIGIN=https://<seu-site>`.
+  Só chama rotas públicas, sem credenciais.
+- **Painel (`/admin`)** servido pela própria API (mesma origem): build com `VITE_API_URL=` (vazio) e `STATIC_DIR` apontando para ele
+  (veja `backend/docs/DEPLOY.md`). No site estático, defina `VITE_ADMIN_URL=https://<sua-api>.onrender.com`: qualquer `/admin*` ali leva ao painel.
+- Com **domínio próprio** (`app.exemplo.com` + `api.exemplo.com`, mesmo site) nada disso é necessário: um só build, `SameSite=Strict`.
+
+Variáveis de build: `VITE_API_URL`, `VITE_POLL_SECONDS`, `VITE_ADMIN_URL` (todas públicas: vão para o JavaScript; nunca ponha segredo nelas).
+O site estático precisa de *fallback* para `index.html` (as rotas são do lado do cliente).
 - Os testes de componentes usam `fetch` simulado e desligam as animações do `motion`; a integração real e as animações foram verificadas à mão no navegador.

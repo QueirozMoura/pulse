@@ -17,15 +17,19 @@
     "db:generate": "prisma generate",
     "admin": "tsx --env-file-if-exists=.env src/cli/admin.ts",
     "admin:prod": "node dist/cli/admin.js",
-    "alerts": "tsx --env-file-if-exists=.env src/cli/alerts.ts"
+    "alerts": "tsx --env-file-if-exists=.env src/cli/alerts.ts",
+    "worker:once": "tsx --env-file-if-exists=.env src/worker/once.ts",
+    "worker:once:prod": "node dist/worker/once.js"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.3",
     "@fastify/cors": "^11.3.1",
+    "@fastify/static": "^10.1.7",
     "@prisma/adapter-pg": "7.10.1",
     "@prisma/client": "7.10.1",
     "fastify": "^5.12.7",
     "pg": "^8.0.0",
+    "pino": "^10.4.0",
     "prisma": "7.10.1",
     "zod": "^4.6.7"
   },
@@ -34,6 +38,7 @@
     "@types/pg": "^8.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "yaml": "^2.9.1"
   }
 }

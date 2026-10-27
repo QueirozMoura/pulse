@@ -1,194 +1,264 @@
-# Hospedagem e operação em produção
+# Hospedagem gratuita e operação
 
-> **Estado:** proposta. Nada foi contratado, configurado ou implantado. Os valores abaixo são de consultas feitas em
-> 2026-10-27 (fontes no fim) e precisam ser reconferidos no painel antes de pagar.
+> **Estado:** nada foi contratado, configurado ou implantado. Os limites abaixo vêm das páginas oficiais consultadas em
+> 2026-10-27 (fontes no fim). Planos gratuitos mudam: **reconfira cada limite no painel antes de depender dele.**
+> Este guia usa apenas planos gratuitos.
 
-## 1. O que o Pulse exige de uma hospedagem
+## 1. Arquitetura
 
-| Requisito | Por quê |
-|---|---|
-| **Processo sempre ligado** (não serverless, não "dorme") | O scheduler é um loop dentro do processo; sem processo, não há checagem |
-| **PostgreSQL gerenciado ou com backup** | Todo o estado (agendamento, histórico, incidentes, sessões) está no banco |
-| **1 instância** (mais de uma funciona, ver §5) | Não há ganho em escalar; o gargalo é a rede, não a CPU |
-| Saída HTTPS livre | As checagens são requisições de saída |
-| Shell ou acesso ao banco | Criar/recuperar o administrador pela CLI (§7) |
+```
+                       ┌───────────────────────────── GitHub Actions (cron ≈ 15 min) ─────────────────────────────┐
+                       │  npm run build → node dist/worker/once.js                                                  │
+                       │  1. reivindica monitores vencidos (FOR UPDATE SKIP LOCKED) e checa                          │
+                       │  2. envia alertas pendentes / retentativas da outbox (Resend)                               │
+                       │  3. grava o batimento em worker_runs e termina (código de saída 0/1/2/3/130)                │
+                       └───────────────────────────────────────────┬───────────────────────────────────────────────┘
+                                                                   │ DATABASE_URL (segredo do repositório)
+ visitante ──► Site estático (página pública) ──► API (Render Web Service gratuito, pode dormir) ──► Neon PostgreSQL (gratuito)
+ administrador ───────────────► painel /admin servido PELA API (mesma origem do cookie) ─────────────────┘
+```
 
-O seu computador **não participa**: API, scheduler e banco rodam na hospedagem. Desligá-lo não interrompe nada.
-
-## 2. Opções avaliadas
-
-| Opção | Custo mensal | Veredito |
+| Peça | Serviço gratuito | Papel |
 |---|---|---|
-| **Render pago** (web service Starter + Postgres Basic-256mb) | **≈ US$ 13,30** (7 + 6 + 0,30 de 1 GB) | **Recomendada** |
-| VPS Hetzner CX23 (2 vCPU, 4 GB, 40 GB) rodando tudo | € 5,99 (+ ≈ € 1,20 de backup), sem impostos | Mais barata e potente, mas **você opera** o servidor |
-| Railway (Hobby) | US$ 5 + uso (RAM ≈ US$ 10/GB-mês, vCPU ≈ US$ 20/vCPU-mês, volume US$ 0,15/GB-mês) | Custo variável e difícil de prever; não recomendo |
-| Render gratuito | US$ 0 | **Descartada:** o serviço dorme após 15 min sem requisição (o scheduler para) e o Postgres gratuito expira em 30 dias |
+| Checagens + envio de alertas | **GitHub Actions** (agendado) | Roda **independente de a API estar acordada** |
+| Banco | **Neon PostgreSQL** | Todo o estado: monitores, histórico, incidentes, outbox, sessões, batimento do worker |
+| API pública e administrativa | **Render Web Service** (free) | Lê o banco; **não** faz checagens nem envia e-mails (`SCHEDULER_ENABLED=false`) |
+| Página pública | Site estático (Render Static Site ou Cloudflare Pages) | Só chama rotas públicas |
+| Painel `/admin` | A própria API (`STATIC_DIR`) | Mesma origem do cookie de sessão (ver §2) |
 
-Não avaliei Fly.io, Neon, Supabase nem Oracle Cloud. Free tiers de banco que "pausam por inatividade" tendem a
-conflitar com um scheduler que consulta o banco a cada 5 s, mas **isso não foi verificado**.
+### O que esperar (sem promessas falsas)
 
-### Por que Render
+- **Cadência real ≈ 15 min, não exata.** O cron do GitHub é "melhor esforço": pode atrasar vários minutos ou pular uma
+  rodada em horários de pico. O Pulse tolera isso (folga de vencimento, `/health` mostrando o atraso real), mas não o elimina.
+- **Uma queda leva, em média, de 15 a 30 min para ser detectada**: a falha precisa ser vista em **duas rodadas seguidas**
+  (regra das 2 falhas consecutivas), mais o atraso do agendador. Não há checagem a cada 30 s nem detecção em 1 minuto.
+- A API **dorme após 15 min sem requisição** e leva cerca de um minuto para acordar. O worker não depende dela.
+- O Neon **suspende a computação após 5 min sem uso** (não dá para desativar no plano gratuito); a primeira consulta depois disso demora mais.
+- Se o GitHub parar de agendar (repositório inativo, §3) ou o Neon esgotar as horas do mês, **as checagens param** e o
+  `/health` passa a mostrar `worker.status: "late"`. Mantenha um monitor externo gratuito em `/health/live` (não em `/health`, §3) e confira `/health` de vez em quando.
 
-- Sem sistema operacional para manter: patches, TLS e reinício do processo são da plataforma.
-- Postgres gerenciado com **backup contínuo (PITR de 3 dias na workspace Hobby, 7 na Pro)** e exportações lógicas guardadas por 7 dias.
-- Shell no painel e SSH para serviços pagos: é por onde roda a CLI do administrador.
-- Pre-Deploy Command para as migrations e health check em `/health`.
-- Deploy sem downtime: a instância nova sobe antes de a antiga receber `SIGTERM` (≈ 60 s depois da troca). Por isso
-  o scheduler foi feito para tolerar duas instâncias ao mesmo tempo (§5).
+## 2. Por que o painel fica na API (cookie e *Public Suffix List*)
 
-A Hetzner vence em preço e folga de recursos. Escolha-a se aceitar operar: `docker compose` com Postgres, Caddy para TLS,
-`pg_dump` agendado para fora da máquina, atualizações de segurança. A CLI do administrador seria
-`docker compose exec -it api node dist/cli/admin.js create --username ...`. Não há Dockerfile no repositório
-(não consegui testá-lo neste ambiente); seria o primeiro passo dessa rota.
+`onrender.com`, `netlify.app`, `vercel.app`, `pages.dev`, `github.io` e similares estão na *Public Suffix List*. Para o navegador,
+`pulse-web.onrender.com` e `pulse-api.onrender.com` são **sites diferentes** (cross-site). O cookie de sessão é `SameSite=Strict`
+(e `__Host-` em produção), então **não seria enviado** do site estático para a API: o login pareceria funcionar e a sessão nunca valeria.
+Afrouxar isso (`SameSite=None`) abriria mão da proteção contra CSRF; **não fizemos**.
 
-## 3. Configuração proposta (Render)
+Solução adotada, sem enfraquecer nada:
 
-Dois recursos na **mesma região** (necessário para a URL interna do banco), na workspace **Hobby**:
+- A **página pública** (somente rotas públicas, `credentials: omit`) fica no site estático e usa CORS (`CORS_ALLOWED_ORIGIN`).
+- O **painel** é servido pela própria API (`STATIC_DIR`), na mesma origem do cookie. No site estático, `VITE_ADMIN_URL` faz `/admin*` redirecionar para ele.
+- Com **domínio próprio** (`app.exemplo.com` + `api.exemplo.com`, mesmo site registrável) nada disso é necessário:
+  um só build do frontend com `VITE_API_URL=https://api.exemplo.com`, sem `STATIC_DIR` nem `VITE_ADMIN_URL`.
 
-**PostgreSQL** — plano Basic-256mb, 1 GB de armazenamento (o armazenamento não pode ser reduzido depois).
-Desative o acesso externo ou restrinja a lista de IPs (o padrão é `0.0.0.0/0`, protegido só por senha).
+Verificado localmente: o painel servido pela API (login, cadastro de monitor) funciona na mesma origem com a CSP aplicada (`connect-src 'self'`).
+**Não verificado** (exigiria deploy): redirects/rewrites da Render ou do Cloudflare Pages e o comportamento real do cron do GitHub.
 
-**Web Service** (Node, plano Starter, 1 instância)
+## 3. Limites dos planos gratuitos (e a conta que importa)
+
+| Serviço | Limite gratuito | Consequência para o Pulse |
+|---|---|---|
+| **Neon Free** | 100 CU-horas/projeto/mês, 1 GB de armazenamento, 5 GB de egress, PITR de 6 h, autosuspend em 5 min (fixo) | Cálculo abaixo. Esgotadas as CU-horas, a computação é suspensa até o próximo período: **o worker falha (exit 1) e a API fica sem banco** |
+| **Render Web Service Free** | 750 h/mês de instância, dorme após 15 min sem requisição de entrada, sem *Pre-Deploy Command* nem Shell | Cold start de ~1 min. Migrations e criação do administrador são feitas do **seu computador** |
+| **Render Static Site** | Gratuito, com limites de banda/build da workspace | Alternativa: Cloudflare Pages (500 builds/mês, 20.000 arquivos) |
+| **GitHub Actions** | Repositório **público**: gratuito. **Privado**: 2.000 min/mês | Cálculo abaixo |
+| **GitHub `schedule`** | Mínimo de 5 min; UTC; pode atrasar/descartar sob carga; só na branch padrão; em repositório público é **desativado após 60 dias sem atividade** | Faça um commit ocasional ou reative em *Actions* quando o GitHub avisar |
+| **Resend Free** | 3.000 e-mails/mês, 100/dia | Um e-mail por abertura e um por resolução: folgado. `ALERT_MAX_PER_HOUR` protege contra oscilação |
+
+### Neon: horas de computação
+
+Cada rodada acorda a computação, que só suspende 5 min depois da última atividade. Com rodadas de duração *T* a cada 15 min:
+
+```
+tempo ligado por rodada ≈ T + 5 min   →   fração ligada ≈ (T + 5) / 15
+T ≈ 20 s:   5,3 / 15 ≈ 36 %   →   730 h × 0,36 ≈ 260 h de computação por mês
+a 0,25 CU (menor tamanho do autoscaling):   ≈ 65 CU-h/mês   (de 100)
+```
+
+Sobram ≈ 35 CU-h (≈ 140 h a 0,25 CU) para a API: consultas públicas, painel e `/health`. **É uma estimativa, não uma medição**:
+o consumo real aparece em Neon → *Usage*. Para não estourar:
+
+- `PUBLIC_CACHE_SECONDS=30`: cache em memória das rotas públicas (invalidado quando você altera algo no painel).
+- `VITE_POLL_SECONDS=600` no frontend (o padrão do código é 60 s; uma aba aberta a cada 60 s manteria o banco ligado o tempo todo).
+- Health check da Render em **`/health/live`** (não consulta o banco). **Não** ponha um monitor externo a cada poucos minutos em `/health`.
+- Rodadas mais espaçadas (ex.: `*/30`) gastam menos, ao custo de detectar quedas mais devagar.
+
+### GitHub Actions: minutos
+
+Cada rodada é um job (dependências em cache, `npm run build`, worker): **estimo ~1 min cobrado** (arredondado para cima por job).
+Em repositório **privado**: 96 rodadas/dia × 30 ≈ **2.880 min** > 2.000 min grátis → **estoura**. Opções:
+(a) repositório **público** (o código não contém segredos; eles ficam em *Secrets*; revise o histórico antes de publicar), ou
+(b) cadência de 30 min (`*/30`, ≈ 1.440 min) com `WORKER_EXPECTED_INTERVAL_MINUTES=30` na API.
+
+## 4. Passo a passo
+
+Faça nesta ordem. **Nada abaixo foi executado por mim**; são os passos exatos para você executar.
+
+### 4.1 Repositório no GitHub
+
+1. Crie o repositório e envie o código (branch padrão `main`). O workflow `.github/workflows/worker.yml` já está no repositório.
+2. Escolha **público** (recomendado, §3) ou privado com `*/30`.
+3. Em *Settings → Actions → General → Fork pull request workflows* mantenha o padrão (sem segredos para forks). O workflow também não escuta `pull_request`.
+
+### 4.2 Neon (banco)
+
+1. Crie a conta em <https://neon.com> e um projeto **Free**, na região mais próxima da região da Render (ex.: `us-east`).
+2. Em *Connect*, copie **duas** URLs do mesmo banco, ambas com `sslmode=require`; trate-as como senhas:
+   - **Pooled** (host com `-pooler`): para a API e o worker → `DATABASE_URL` da Render e do GitHub.
+   - **Direct** (sem `-pooler`): para migrations e CLI do administrador, rodadas do **seu computador**.
+3. Aplique as migrations **do seu computador** (a Render gratuita não tem Pre-Deploy; o worker nunca roda migrations):
+   ```bash
+   cd backend && npm ci
+   read -rs DATABASE_URL && export DATABASE_URL     # cole a URL DIRECT; sem eco, fora do histórico
+   npm run db:deploy
+   ```
+4. Crie o administrador (pede a senha duas vezes, sem eco), com a mesma `DATABASE_URL` ainda exportada:
+   ```bash
+   npm run admin -- create --username seu-usuario
+   unset DATABASE_URL
+   ```
+
+### 4.3 Render (API + painel)
+
+1. *New → Web Service* → conecte o repositório. **Deixe *Root Directory* vazio** (os comandos entram nas pastas).
+2. Campos:
+
+   | Campo | Valor |
+   |---|---|
+   | Runtime | Node |
+   | Instance Type | **Free** |
+   | Build Command | `cd frontend && npm ci && VITE_API_URL= npm run build && cd ../backend && npm ci --include=dev && npm run build` |
+   | Start Command | `cd backend && node dist/server.js` |
+   | Health Check Path | `/health/live` |
+
+   `VITE_API_URL=` (vazio) faz o painel falar com a mesma origem. `--include=dev` porque a Render define `NODE_ENV=production`.
+3. *Environment* (marque `DATABASE_URL` como secreta):
+
+   | Variável | Valor |
+   |---|---|
+   | `NODE_VERSION` | `22` |
+   | `NODE_ENV` | `production` |
+   | `DATABASE_URL` | URL **pooled** do Neon |
+   | `SCHEDULER_ENABLED` | `false` (a API não faz checagens nem envia e-mails) |
+   | `MIN_INTERVAL_SECONDS` | `900` (o cadastro só aceita 15 min ou mais) |
+   | `WORKER_EXPECTED_INTERVAL_MINUTES` | `15` (ou `30`, conforme o cron do workflow) |
+   | `PUBLIC_CACHE_SECONDS` | `30` |
+   | `STATIC_DIR` | `../frontend/dist` |
+   | `TRUST_PROXY_HOPS` | `1` |
+   | `CORS_ALLOWED_ORIGIN` | origem do site estático (§4.4), ex.: `https://pulse-web.onrender.com`. Omita se usar só a API |
+   | `ALERT_DELIVERY` | `off` (quem envia e-mails é o worker) |
+
+4. Faça o deploy e confira `curl https://<api>.onrender.com/health/live` → `{"status":"ok"}`.
+   `/health` mostra `worker.status: "never"` até a primeira rodada do GitHub.
+5. Abra `https://<api>.onrender.com/admin`, entre e cadastre um monitor (o formulário só oferece ≥ 15 min).
+
+### 4.4 Site estático (página pública)
+
+Opcional: a API já serve a página pública em `/`. O site estático existe para a página abrir mesmo com a API dormindo
+(mostra "o servidor está acordando" e carrega os dados quando a API responde).
+
+**Render Static Site** (ou Cloudflare Pages, com os mesmos valores):
 
 | Campo | Valor |
 |---|---|
-| Build Command | `npm ci --include=dev && npm run build` |
-| Pre-Deploy Command | `npm run db:deploy` |
-| Start Command | `npm start` |
-| Health Check Path | `/health` (devolve 503 se o banco cair **ou o scheduler travar**; a Render reinicia) |
+| Build Command | `cd frontend && npm ci && npm run build` |
+| Publish Directory | `frontend/dist` |
+| Redirect/Rewrite | `/*` → `/index.html` (**Rewrite**) |
+| `VITE_API_URL` | `https://<api>.onrender.com` |
+| `VITE_ADMIN_URL` | `https://<api>.onrender.com` |
+| `VITE_POLL_SECONDS` | `600` |
 
-> `--include=dev` é uma precaução: a Render define `NODE_ENV=production`, o que normalmente faz o `npm ci` pular
-> devDependencies. Numa cópia limpa deste projeto, `NODE_ENV=production npm ci` **sem** a flag também compilou, mas só
-> porque o `prisma` traz o `typescript` como dependência transitiva; não convém depender disso. O `prisma` foi movido para
-> `dependencies` para o Pre-Deploy (`prisma migrate deploy`) funcionar em produção. Esta receita (install, build,
-> migrations em banco vazio, `npm start`, CLI a partir de `dist/`) foi executada localmente em modo produção; **não foi
-> executada na Render**.
+Depois de criar, copie a URL do site para `CORS_ALLOWED_ORIGIN` na API e refaça o deploy dela.
 
-Variáveis de ambiente:
+### 4.5 GitHub Actions (worker)
 
-| Variável | Valor | Observação |
-|---|---|---|
-| `NODE_ENV` | `production` | Cookie `Secure` + `__Host-`; admin tem que estar atrás de HTTPS |
-| `DATABASE_URL` | URL **interna** do Postgres | Segredo; só no painel |
-| `TRUST_PROXY_HOPS` | `1` | **Confirme** com um login de teste que `req.ip` é o seu IP e não o do proxy (veja o log `login failed`) |
-| `CORS_ALLOWED_ORIGIN` | origem do frontend | Quando o frontend existir |
-| `SESSION_COOKIE_SAMESITE` | `strict` | Exige frontend no mesmo site (subdomínios do mesmo domínio) |
-| `ALERT_DELIVERY` | `email` | Alertas por e-mail ([ALERTS.md](ALERTS.md)). Com `email`, exige as três abaixo |
-| `ALERT_EMAIL_TO` | seu e-mail | Destino dos alertas |
-| `ALERT_EMAIL_FROM` | `Pulse <alertas@seudominio.com>` | Remetente aceito pelo Resend |
-| `RESEND_API_KEY` | chave do Resend | **Segredo**; só no painel da Render |
-| `HOST` | `0.0.0.0` | |
-| demais | padrões | `MAX_MONITORS=100`, `CHECK_RETENTION_DAYS=30`, `CHECK_TIMEOUT_MS=10000`, `MIN_INTERVAL_SECONDS=30` |
+1. *Settings → Secrets and variables → Actions → Secrets → New repository secret*:
 
-## 4. Custo e dimensionamento
+   | Secret | Valor |
+   |---|---|
+   | `DATABASE_URL` | URL **pooled** do Neon |
+   | `RESEND_API_KEY` | só quando ativar alertas por e-mail |
+   | `ALERT_EMAIL_TO` | destinatário dos alertas |
+   | `ALERT_EMAIL_FROM` | remetente, ex.: `Pulse <alertas@seudominio.com>` |
 
-**Custo fixo estimado: ≈ US$ 13,30/mês** (Starter US$ 7 + Basic-256mb US$ 6 + 1 GB a US$ 0,30), mais impostos. Workspace Hobby
-custa US$ 0 e inclui 5 GB de banda (excedente US$ 0,15/GB). A saída do Pulse é pequena (só cabeçalhos das checagens e
-JSON da página de status).
+2. *Variables → New repository variable*: `ALERT_DELIVERY` = `email` (ou `log`). Sem a variável os alertas ficam **desligados**.
+   Opcionais: `WORKER_TIMEOUT_SECONDS` (240), `WORKER_MAX_CHECKS` (200).
+3. *Actions → Pulse worker → Run workflow* (disparo manual). O resumo mostra duração, checagens e alertas; código de saída ≠ 0 marca a execução como falha.
+4. Confirme em `https://<api>.onrender.com/health` que `worker.status` virou `ok`.
+5. Antes de depender dos alertas, faça o `test-send` de `docs/ALERTS.md` a partir do seu computador.
 
-Medidas feitas neste repositório (PostgreSQL 18 local, não na Render):
+O cron é `7,22,37,52 * * * *` (UTC), de propósito fora do minuto `:00`. Para `*/30`, troque a linha no workflow.
 
-| Medida | Valor |
+## 5. Como o worker se comporta
+
+| Pergunta | Resposta |
 |---|---|
-| Uma checagem no banco (linha + índice) | **≈ 168 bytes** |
-| 1 monitor a cada 30 s, retenção de 30 dias | 86.400 linhas ≈ **14 MB** |
-| 1 monitor a cada 60 s, retenção de 30 dias | ≈ 7 MB |
-| Memória do processo (API + scheduler, ocioso) | **≈ 156 MB** |
-| Um hash de senha (login) | ≈ 164 ms e pico de ≈ 64 MiB |
+| Duas execuções ao mesmo tempo (agendada + manual)? | `concurrency` do workflow as serializa; e, mesmo sem ele, `FOR UPDATE SKIP LOCKED` garante que cada monitor e cada alerta sejam processados **uma vez** (testado com PostgreSQL real) |
+| Rodar de novo logo em seguida? | Não acha nada vencido: idempotente |
+| Monitor de 15 min com cron de 15 min? | `WORKER_DUE_SLACK_SECONDS` (300) considera vencido quem vence nos próximos 5 min; sem isso o jitter do cron faria o monitor ser pulado cerca de metade das vezes |
+| Muitos monitores? | `WORKER_MAX_CHECKS` (200) por rodada; o resto fica vencido e é feito na seguinte |
+| Cancelado ou morto no meio? | SIGTERM → para de reivindicar, fecha o que começou, grava `cancelled` (exit 130). Morte brusca: a rodada fica `running` e vira `abandoned` na seguinte; monitores já reivindicados só voltam no próximo intervalo (*at-most-once*, de propósito, para nunca checar em dobro) |
+| Tempo total? | `WORKER_TIMEOUT_SECONDS` (240); estourou → exit 3. O job do GitHub tem teto próprio de 8 min |
+| Banco fora / Neon sem horas? | exit 1, sem laço infinito |
+| Provedor de e-mail fora? | O alerta fica `PENDING` com espera crescente (1 min, 5 min, 15 min, 1 h, 3 h, 6 h). Como o worker só roda a cada ~15 min, a retentativa acontece na primeira rodada depois da espera. Após 7 tentativas, `FAILED` |
 
-Conclusões: o Starter (512 MB) comporta o processo com folga mesmo durante um login. Em 1 GB de banco cabem
-**≈ 65 monitores a 30 s** (ou ≈ 130 a 60 s) com 30 dias de retenção. O padrão `MAX_MONITORS=100` a 30 s precisaria de
-≈ 1,4 GB: aumente o armazenamento, reduza `CHECK_RETENTION_DAYS` ou use intervalos maiores. A retenção apaga o excedente
-automaticamente (a cada hora, em lotes).
+Códigos de saída: `0` ok (inclui rodada truncada, com aviso) · `1` falha (banco/gravação) · `2` configuração inválida ou migrations ausentes · `3` tempo total estourado · `130` cancelado.
 
-**Não testado:** a capacidade de escrita do Basic-256mb (0,1 vCPU). 100 monitores a 30 s são ≈ 3,3 gravações por segundo,
-provavelmente confortável, mas comece com poucos monitores e observe antes de crescer.
+**Segredos:** o worker não imprime `DATABASE_URL` nem `RESEND_API_KEY` (redação por valor, por padrão de URL e de `re_...`; sem *stack traces*).
+O YAML só referencia `secrets.*`, no passo do worker, via `env:` (nunca em `run:`). Se suspeitar de vazamento, **gire o segredo**: senha do Neon (*Roles → Reset password*) ou chave do Resend.
 
-## 5. Como o scheduler continua rodando (e o que acontece nas falhas)
+## 6. Observabilidade
 
-- O loop mora no processo da API. Não depende de visitas. Enquanto o serviço estiver de pé, checa.
-- O agendamento fica no banco (`next_check_at`). **Reinício:** o que venceu é checado uma vez, sem rajada de reposição.
-- **Deploy com sobreposição** ou mais de uma instância: cada monitor é reivindicado por uma só instância
-  (`FOR UPDATE SKIP LOCKED`, provado em teste com duas instâncias e janela de corrida forçada).
-- **Checagem lenta:** ocupa só a própria vaga. Há `SCHEDULER_CONCURRENCY` (10) vagas e cada checagem tem timeout total de
-  `CHECK_TIMEOUT_MS`. O intervalo mínimo aceito é sempre maior que o timeout.
-- **Banco fora:** o processo não cai. Registra o erro, tenta no próximo ciclo (5 s) e `/health` passa a responder 503.
-- **Queda no meio de uma checagem:** a checagem é perdida, **nunca repetida**. Há um buraco de no máximo um intervalo.
-- **Resultados obsoletos** (monitor pausado, excluído ou com URL alterada durante a checagem, ou resultado que chega depois
-  de um mais novo) não alteram estado nem abrem/fecham incidentes.
-- `SIGTERM`: para de reivindicar e espera as checagens em andamento (≤ timeout), dentro dos 30 s padrão da Render.
+`GET /health` (sem segredos):
 
-## 6. Limitações que permanecem
+```json
+{
+  "status": "ok",
+  "scheduler": "disabled",
+  "worker": {
+    "expectedEveryMinutes": 15, "lateAfterMinutes": 45, "status": "ok",
+    "lastSuccessAt": "2026-10-27T04:40:20.401Z", "ageSeconds": 170,
+    "lastRun": { "status": "ok", "startedAt": "2026-10-27T04:40:20.388Z", "finishedAt": "2026-10-27T04:40:20.401Z" }
+  }
+}
+```
 
-1. **Ponto único de falha.** Se a Render ou a região cair, ninguém monitora, e o Pulse não se avisa. Recomendo um monitor
-   externo gratuito apontado para `/health` (retorna 503 também com o scheduler travado). Os alertas por e-mail avisam
-   dos incidentes **dos seus sites**, não de uma queda do próprio Pulse.
-2. **Um único ponto de observação.** As checagens saem da região da Render; um problema de rota entre ela e o seu
-   site pode parecer indisponibilidade.
-3. **Buracos no histórico** em reinícios/deploys; o uptime é `checagens bem-sucedidas ÷ checagens feitas`, então
-   períodos sem checagem não contam como queda nem como disponibilidade (a API expõe o tamanho da amostra).
-4. **Segurança de rede:** `SSRF` é tratado na aplicação (ver README); a Render não oferece firewall de saída para bloquear a rede interna.
-5. Rate limit só no login. Rotas públicas têm `Cache-Control: public, max-age=10`; para absorver tráfego alto ponha um CDN
-   na frente (pendência).
+- `worker.status`: `ok` · `late` (sem rodada bem-sucedida há mais de `lateAfterMinutes`, padrão 3× a cadência) · `never` · `unknown`.
+- **O código HTTP não depende do worker.** Um atraso do GitHub nunca faz a Render reiniciar a API; por isso o health check dela é `/health/live`.
+- Na página pública, uma checagem muito mais velha que a cadência aparece como **"checagem atrasada"**, distinta de "indisponível" e "sem dados", e nunca como operacional.
+- Se `lastRun.status` for `failed`, veja os logs da execução em *Actions*.
 
-## 7. Administrador em produção
-
-A conta é criada **dentro do ambiente que tem acesso ao banco de produção**. A senha nunca vai em argumento, variável de
-ambiente nem no repositório: é digitada num prompt sem eco (ou lida do stdin).
-
-### Criar o primeiro administrador (Render)
-
-1. Faça o primeiro deploy e confirme que `GET /health` responde `200` (isso garante que as migrations rodaram).
-2. Abra o serviço no painel → aba **Shell** (ou `render ssh <serviço>` depois de cadastrar sua chave SSH).
-3. Confirme que o ambiente do shell enxerga o banco, **sem imprimir o segredo**:
-   ```bash
-   test -n "$DATABASE_URL" && echo "DATABASE_URL definida" || echo "ausente"
-   ```
-   A documentação da Render não afirma que as variáveis do serviço estão disponíveis no shell. Se estiver ausente,
-   cole a URL **interna** do painel: `export DATABASE_URL='postgresql://...'` (a sessão encerra no próximo deploy).
-4. Crie a conta (pede a senha duas vezes, sem eco):
-   ```bash
-   node dist/cli/admin.js create --username seu-usuario
-   ```
-5. Teste o login a partir do seu computador e confirme o cookie `__Host-pulse_session` com `Secure` e `HttpOnly`.
-
-Sessões de shell/SSH fecham a cada deploy ou manutenção. Isso não afeta o administrador já criado.
-
-### Recuperar o acesso
+## 7. Recuperar o acesso
 
 | Situação | Procedimento |
 |---|---|
-| Esqueceu a senha | No shell: `node dist/cli/admin.js reset-password`. Troca a senha e **encerra todas as sessões** |
-| Suspeita de comprometimento | O mesmo `reset-password`; depois troque a senha do banco no painel e revise os logs de `login failed`/`login succeeded` |
-| Bloqueado por tentativas (429) | Espere a janela (15 min) ou, no shell do banco: `DELETE FROM login_failures;` |
-| Quer trocar o **nome de usuário** | No banco: `DELETE FROM admin_users;` (apaga as sessões em cascata) e rode `create` com o novo nome |
-| Sem acesso ao shell da Render | No painel do Postgres, libere **temporariamente** o seu IP (`/32`) na lista de acesso externo e, no seu computador: `DATABASE_URL='<URL externa com ?sslmode=require>' npm run admin -- reset-password`. Remova o IP depois |
+| Esqueceu a senha | No seu computador, com a URL **direct**: `npm run admin -- reset-password` (encerra todas as sessões) |
+| Suspeita de comprometimento | O mesmo `reset-password`; depois gire a senha do banco no Neon e revise os logs da Render (`login failed`/`login succeeded`) |
+| Bloqueado por tentativas (429) | Espere a janela (15 min) ou, no SQL Editor do Neon: `DELETE FROM login_failures;` |
+| Trocar o **nome de usuário** | No SQL Editor do Neon: `DELETE FROM admin_users;` e rode `create` com o novo nome |
 
-A CLI compilada (`node dist/cli/admin.js`) existe depois de `npm run build` em qualquer máquina que tenha as dependências instaladas
-e a `DATABASE_URL`; foi testada a partir de `dist/` em modo produção.
+## 8. Checklist antes de ativar (nada foi feito)
 
-## 8. Checklist antes do primeiro deploy (nada disto foi feito)
+- [ ] Repositório criado (público, ou privado com `*/30`) e `worker.yml` na branch padrão
+- [ ] Neon: projeto Free, URLs pooled/direct guardadas, `db:deploy` e `admin create` rodados do seu computador
+- [ ] Render: Web Service Free com as variáveis da §4.3; `/health/live` responde `ok`
+- [ ] (Opcional) Site estático com `VITE_API_URL`, `VITE_ADMIN_URL`, `VITE_POLL_SECONDS=600`; `CORS_ALLOWED_ORIGIN` na API
+- [ ] GitHub: secrets e variável `ALERT_DELIVERY`; execução manual verde; `/health` com `worker.status: "ok"`
+- [ ] `test-send` de e-mail confirmado (`docs/ALERTS.md`)
+- [ ] Lembrete para conferir o uso do Neon e o aviso de 60 dias de inatividade do GitHub
 
-- [ ] Você aprova o custo (≈ US$ 13,30/mês) e a região.
-- [ ] Criar o Postgres; desativar/restringir acesso externo.
-- [ ] Criar o web service com os campos da §3; copiar a URL interna.
-- [ ] Primeiro deploy → `/health` 200 → criar o administrador (§7).
-- [ ] Confirmar `TRUST_PROXY_HOPS` (IP real nos logs de login).
-- [ ] Alertas: configurar as variáveis `ALERT_*`/`RESEND_API_KEY` e rodar `node dist/cli/alerts.js test-send --confirm` no shell
-      (um e-mail de teste) antes de depender deles; depois o degrau 3 de [ALERTS.md](ALERTS.md) num banco de teste.
-- [ ] Cadastrar um monitor de teste (ver README → "Cadastrando monitores em produção" abaixo) e ver o histórico andar.
-- [ ] Monitor externo no `/health` e um teste de restauração de backup (PITR cria uma instância nova; valide antes de trocar).
+## 9. Alternativa paga (não configurada)
+
+Se o limite gratuito incomodar, o modo anterior (processo sempre ligado com o scheduler interno, `SCHEDULER_ENABLED=true`, a partir de 30 s)
+continua no código e funciona (≈ US$ 13/mês na Render, ou um VPS). Não foi configurado.
 
 ## Fontes (consultadas em 2026-10-27)
 
-- Render, planos gratuitos e limites: https://render.com/docs/free
-- Render, preços (Starter US$ 7, Basic-256mb US$ 6, armazenamento US$ 0,30/GB) — via resumo de busca da página de preços e do artigo
-  https://render.com/articles/how-much-does-cloud-application-hosting-cost-for-small-businesses (a tabela de preços não renderizou na consulta
-  direta, e há menção a uma mudança de planos em 1º de agosto de 2026: **reconfirme em https://render.com/pricing**)
-- Resend, planos e limites: https://resend.com/pricing e https://resend.com/docs/api-reference/emails/send-email
-- Render, backups/PITR: https://render.com/docs/postgresql-backups
-- Render, shell/SSH: https://render.com/docs/ssh
-- Render, deploys, Pre-Deploy e desligamento: https://render.com/docs/deploys
-- Render, acesso externo ao Postgres: https://render.com/docs/postgresql-creating-connecting
-- Hetzner Cloud: https://www.hetzner.com/cloud/cost-optimized/ (preços sem impostos)
-- Railway: https://railway.com/pricing
+- Neon, planos e limites: https://neon.com/docs/introduction/plans
+- Render, planos gratuitos: https://render.com/docs/free
+- GitHub Actions, evento `schedule`: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
+- GitHub Actions, cobrança e minutos: https://docs.github.com/en/billing/managing-billing-for-your-products/managing-billing-for-github-actions/about-billing-for-github-actions
+- GitHub Actions, segredos: https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions
+- Public Suffix List: https://publicsuffix.org/list/
+- Cloudflare Pages, limites: https://developers.cloudflare.com/pages/platform/limits/
+- Resend, planos e limites: https://resend.com/pricing

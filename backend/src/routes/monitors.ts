@@ -16,7 +16,7 @@ export function monitorRoutes(
   limits: { minIntervalSeconds: number; checkTimeoutMs: number; maxMonitors: number },
 ): void {
   // O intervalo precisa ser maior que o timeout: assim a checagem anterior sempre termina antes da próxima.
-  const minIntervalSeconds = Math.max(limits.minIntervalSeconds, Math.floor(limits.checkTimeoutMs / 1000) + 1);
+  const minIntervalSeconds = Math.max(limits.minIntervalSeconds, Math.floor(limits.checkTimeoutMs / 1000) + 1); // = effectiveMinIntervalSeconds
   const name = z.string().trim().min(1).max(100);
   const intervalSeconds = z.number().int().min(minIntervalSeconds).max(MAX_INTERVAL_SECONDS);
 

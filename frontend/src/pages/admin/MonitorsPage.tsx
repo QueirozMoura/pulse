@@ -12,7 +12,7 @@ import { StateBadge } from "../../components/StateBadge";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
 import { useNow, usePolling } from "../../hooks/usePolling";
 import { describeError, type Described } from "../../lib/errorText";
-import { formatAgo, formatDateTime, formatDuration, plural } from "../../lib/format";
+import { formatAgo, formatDateTime, formatDuration, formatTime, plural } from "../../lib/format";
 import { intervalLabel, MonitorFormDialog } from "./MonitorFormDialog";
 
 const REFRESH_MS = 20_000;
@@ -147,7 +147,7 @@ export function MonitorsPage() {
           title="Você ainda não monitora nada"
           action={<button type="button" className="btn btn--primary" onClick={openNew}><Plus size={18} aria-hidden="true" />Novo monitor</button>}
         >
-          Cadastre o primeiro monitor com o botão “Novo monitor”. A primeira checagem acontece em poucos segundos.
+          Cadastre o primeiro monitor com o botão “Novo monitor”. A primeira checagem acontece na próxima rodada do worker, o que pode levar até cerca de 15 minutos no plano gratuito.
         </EmptyState>
       )}
       {visible && monitors && monitors.length > 0 && visible.length === 0 && <EmptyState title="Nenhum monitor neste filtro">Escolha outro estado acima para ver os demais.</EmptyState>}
@@ -231,8 +231,9 @@ export function MonitorsPage() {
 }
 
 function nextIn(m: AdminMonitor, nowMs: number): string {
+  // A hora é o mais cedo possível, não uma promessa: o worker agendado pode atrasar.
   const secs = Math.round((Date.parse(m.nextCheckAt) - nowMs) / 1000);
-  return secs <= 0 ? "em instantes" : `em ${formatDuration(secs)}`;
+  return secs <= 0 ? "na próxima rodada" : `a partir de ${formatTime(Date.parse(m.nextCheckAt))}`;
 }
 
 function count(ms: AdminMonitor[]) {

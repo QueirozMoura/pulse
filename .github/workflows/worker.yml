@@ -1,0 +1,66 @@
+# Pulse worker: faz as checagens vencidas e envia os alertas pendentes (outbox).
+# Roda sozinho no GitHub Actions, independente de a API (Render gratuito) estar acordada.
+#
+# O agendamento do GitHub NÃO é exato: pode atrasar vários minutos ou pular uma rodada sob carga. O Pulse trata isso
+# (folga de vencimento, /health mostrando atraso real). Este arquivo não contém credenciais: elas ficam em
+# Settings > Secrets and variables > Actions. Passo a passo em backend/docs/DEPLOY.md.
+name: Pulse worker
+
+on:
+  schedule:
+    # A cada 15 minutos, fora do minuto :00 (horário mais disputado, onde o GitHub mais atrasa/descarta execuções). UTC.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch: {}
+  # Intencionalmente SEM pull_request / pull_request_target: checagens usam segredos e nunca rodam por PR (nem de fork).
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pulse-worker
+  cancel-in-progress: false # uma execução em andamento termina; a seguinte espera (e a anterior pendente é descartada)
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  run:
+    name: Rodada de checagens e alertas
+    # Só por agendamento ou disparo manual. (Os gatilhos acima já excluem PRs; este guarda é uma segunda barreira.)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8 # teto do job; o worker tem o próprio prazo (WORKER_TIMEOUT_SECONDS=240) e termina antes
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # Scripts de pacotes desativados (--ignore-scripts): nada de terceiros executa com segredos no ambiente,
+      # e este passo nem recebe os segredos.
+      - name: Instalar dependências
+        run: npm ci --include=dev --ignore-scripts
+
+      - name: Compilar
+        run: npm run build
+
+      - name: Rodar o worker
+        run: node dist/worker/once.js
+        env:
+          NODE_ENV: production
+          LOG_LEVEL: info
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Alertas: só enviam se ALERT_DELIVERY=email (variável do repositório). Sem ela, ficam desligados.
+          ALERT_DELIVERY: ${{ vars.ALERT_DELIVERY }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          # Limites desta rodada (podem ser ajustados por variáveis do repositório; os padrões do código valem se vazias)
+          WORKER_TIMEOUT_SECONDS: ${{ vars.WORKER_TIMEOUT_SECONDS }}
+          WORKER_MAX_CHECKS: ${{ vars.WORKER_MAX_CHECKS }}

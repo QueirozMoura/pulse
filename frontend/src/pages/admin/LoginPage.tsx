@@ -47,7 +47,7 @@ export function LoginPage() {
         <aside className="login__art" aria-hidden="true">
           <div className="login__art-copy">
             <p className="login__art-title">Cada sistema sob vigilância.</p>
-            <p className="login__art-text">O Pulse checa seus sistemas o tempo todo e abre um incidente quando algo cai.</p>
+            <p className="login__art-text">O Pulse checa seus sistemas em rodadas agendadas e abre um incidente quando algo cai.</p>
           </div>
           <HeroSignal tone="partial" />
         </aside>

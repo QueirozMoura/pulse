@@ -10,6 +10,7 @@ const stubDb = { session: { findUnique: async () => null } } as unknown as Db;
 /** Rotas que podem ser acessadas sem login. Qualquer rota nova fora desta lista TEM que exigir sessão. */
 const PUBLIC = new Set([
   "GET /health",
+  "GET /health/live",
   "GET /public/status",
   "GET /public/monitors/:id",
   "GET /public/monitors/:id/history",

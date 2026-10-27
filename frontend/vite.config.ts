@@ -10,5 +10,6 @@ export default defineConfig({
     setupFiles: ["./test/setup.ts"],
     include: ["test/**/*.test.{ts,tsx}"],
     css: false,
+    env: { VITE_POLL_SECONDS: "30", VITE_ADMIN_URL: "" }, // cadência de 30 s só nos testes; o padrão real é 60 s
   },
 });

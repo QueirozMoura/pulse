@@ -3,9 +3,11 @@ import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import { createGuards } from "./auth/guards.js";
-import type { Config } from "./config.js";
+import { workerLateAfterMinutes, type Config } from "./config.js";
 import type { Db } from "./lib/db.js";
 import { AppError } from "./lib/errors.js";
+import { PublicCache } from "./lib/public-cache.js";
+import { registerStatic } from "./static.js";
 import { loginRoute, sessionRoutes } from "./routes/auth.js";
 import { healthRoutes, type SchedulerStatus } from "./routes/health.js";
 import { monitorRoutes } from "./routes/monitors.js";
@@ -119,8 +121,16 @@ export function buildApp(config: Config, db: Db, deps: AppDeps = {}): FastifyIns
   app.setNotFoundHandler((req, reply) => reply.code(404).send(body(req, "not_found", "Rota não encontrada")));
 
   // --- Rotas públicas (sem sessão) ---
-  healthRoutes(app, db, deps.schedulerStatus ?? (() => "disabled"));
-  publicRoutes(app, db);
+  const late = workerLateAfterMinutes(config);
+  healthRoutes(app, db, {
+    schedulerStatus: deps.schedulerStatus ?? (() => "disabled"),
+    worker:
+      config.WORKER_EXPECTED_INTERVAL_MINUTES && late
+        ? { expectedEveryMinutes: config.WORKER_EXPECTED_INTERVAL_MINUTES, lateAfterMinutes: late }
+        : undefined,
+  });
+  const cache = new PublicCache(config.PUBLIC_CACHE_SECONDS);
+  publicRoutes(app, db, { cache, checkRoundsEveryMinutes: config.WORKER_EXPECTED_INTERVAL_MINUTES ?? null });
   app.register(async (scope) => {
     scope.addHook("onSend", async (_req, reply) => void reply.header("cache-control", "no-store"));
     loginRoute(scope, db, config); // única rota de auth sem sessão
@@ -136,6 +146,10 @@ export function buildApp(config: Config, db: Db, deps: AppDeps = {}): FastifyIns
     priv.addHook("onRequest", guards.authenticate);
     priv.addHook("onRequest", guards.csrf);
     priv.addHook("onSend", async (_req, reply) => void reply.header("cache-control", "no-store"));
+    // Qualquer mudança feita pelo administrador invalida o cache público: ele vê o efeito na hora.
+    priv.addHook("onResponse", async (req) => {
+      if (req.method !== "GET") cache.clear();
+    });
     sessionRoutes(priv, db, config);
     monitorRoutes(priv, db, {
       minIntervalSeconds: config.MIN_INTERVAL_SECONDS,
@@ -143,6 +157,8 @@ export function buildApp(config: Config, db: Db, deps: AppDeps = {}): FastifyIns
       maxMonitors: config.MAX_MONITORS,
     });
   });
+
+  if (config.STATIC_DIR) registerStatic(app, config.STATIC_DIR);
 
   return app;
 }

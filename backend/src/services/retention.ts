@@ -4,10 +4,10 @@ import type { Db } from "../lib/db.js";
  * Apaga checagens mais antigas que `days`, em lotes (não trava a tabela nem estoura memória
  * se houver muito para limpar). Devolve quantas linhas foram removidas.
  */
-export async function purgeOldChecks(db: Db, days: number, batchSize = 5000): Promise<number> {
+export async function purgeOldChecks(db: Db, days: number, batchSize = 5000, maxBatches = Infinity): Promise<number> {
   const cutoff = new Date(Date.now() - days * 86_400_000);
   let total = 0;
-  for (;;) {
+  for (let batch = 0; batch < maxBatches; batch++) {
     const rows = await db.checkResult.findMany({
       where: { checkedAt: { lt: cutoff } },
       select: { id: true },
@@ -18,4 +18,5 @@ export async function purgeOldChecks(db: Db, days: number, batchSize = 5000): Pr
     total += count;
     if (rows.length < batchSize) return total;
   }
+  return total;
 }

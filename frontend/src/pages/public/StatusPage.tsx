@@ -10,7 +10,7 @@ import { LiveDot } from "../../components/LiveDot";
 import { SystemCard } from "../../components/SystemCard";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
 import { usePagedFeed } from "../../hooks/usePagedFeed";
-import { useNow, usePolling } from "../../hooks/usePolling";
+import { useAfter, useNow, usePolling } from "../../hooks/usePolling";
 import { isFetchStale, POLL_MS, summarize } from "../../lib/freshness";
 import { formatPercent, formatTime, plural } from "../../lib/format";
 import { mergeById } from "../../lib/history";
@@ -71,6 +71,12 @@ export function StatusPage() {
   useDocumentTitle(`${summary.headline} — Pulse`);
 
   const monitors = useMemo(() => [...(data?.monitors ?? [])].sort(bySeverity), [data]);
+  // Checagem mais recente entre os sistemas ativos: mostra a idade real do dado, não a do último carregamento da página.
+  const latestCheckAge = useMemo(() => {
+    const times = monitors.filter((m) => m.state !== "paused" && m.lastCheck).map((m) => Date.parse(m.lastCheck!.checkedAt));
+    return times.length === 0 ? null : (serverNow - Math.max(...times)) / 1000;
+  }, [monitors, serverNow]);
+  const slowStart = useAfter(8000, status.loading);
   const counts = useMemo(() => {
     const c: Record<PublicState, number> = { operational: 0, unavailable: 0, paused: 0, no_data: 0 };
     for (const m of monitors) if (m.state in c) c[m.state]++;
@@ -111,7 +117,7 @@ export function StatusPage() {
             </dl>
           </div>
         )}
-        <Freshness lastSuccessAt={status.lastSuccessAt} nowMs={now} failing={status.error !== null} stale={fetchStale} refreshing={status.refreshing} onRefresh={status.refetch} />
+        <Freshness lastSuccessAt={status.lastSuccessAt} nowMs={now} failing={status.error !== null} stale={fetchStale} refreshing={status.refreshing} onRefresh={status.refetch} rounds={data?.checkRounds?.everyMinutes ?? null} latestCheckAgeSeconds={latestCheckAge} />
       </section>
 
       <section className="section" aria-labelledby="systems-title">
@@ -119,6 +125,11 @@ export function StatusPage() {
           <h2 id="systems-title" className="section__title">Sistemas</h2>
           {data && data.monitors.length > 0 && <p className="section__note">Horários no fuso do seu navegador.</p>}
         </div>
+        {status.loading && slowStart && (
+          <Notice tone="info" title="O servidor está acordando">
+            Para economizar recursos, a API fica em repouso quando ninguém a usa. A primeira consulta pode levar cerca de um minuto.
+          </Notice>
+        )}
         {status.loading && <SkeletonUnits />}
         {!status.loading && !data && status.error && (
           <ErrorState title="Não foi possível carregar os sistemas" onRetry={status.refetch}>

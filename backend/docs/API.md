@@ -60,7 +60,8 @@ por tempo indeterminado (não trate o conteúdo como estrutura). `limit` fora do
 
 | Método e rota | Acesso | Descrição |
 |---|---|---|
-| `GET /health` | público | Saúde do Pulse (banco + scheduler) |
+| `GET /health/live` | público | O processo está de pé (não consulta o banco) |
+| `GET /health` | público | Saúde do Pulse (banco + scheduler) e batimento do worker |
 | `GET /public/status` | público | Estado atual de todos os monitores |
 | `GET /public/monitors/:id` | público | Um monitor (mesmo formato da lista) |
 | `GET /public/monitors/:id/history` | público | Checagens recentes, paginado |
@@ -112,16 +113,34 @@ seguidas). Uma resolução exige um sucesso.
 `blocked` (destino não permitido) · `unknown`. É a única informação sobre *por que* falhou; `null` quando `success: true`.
 O `statusCode` é `null` quando não houve resposta HTTP.
 
+### `GET /health/live`
+
+O processo está de pé. **Não consulta o banco** (não acorda o Neon gratuito). Sempre `200 { "status": "ok" }`. Use-o como *health check* da hospedagem.
+
 ### `GET /health`
 
 Saúde do próprio Pulse. **Entrada:** nenhuma.
 
 | Resposta | Corpo |
 |---|---|
-| `200` | `{ "status": "ok", "scheduler": "ok" \| "disabled" }` |
-| `503` | `{ "status": "degraded", "scheduler": "ok" \| "stalled" \| "disabled" }` — banco inacessível **ou** scheduler sem conseguir consultar o banco há mais de `3 × tick + 15 s` |
+| `200` | `{ "status": "ok", "scheduler": "ok" \| "disabled", "worker"?: {...} }` |
+| `503` | `{ "status": "degraded", "scheduler": "ok" \| "stalled" \| "disabled", "worker"?: {...} }` — banco inacessível **ou** scheduler *interno* sem conseguir consultar o banco há mais de `3 × tick + 15 s` |
 
-`scheduler: "disabled"` quando a instância roda só a API (`SCHEDULER_ENABLED=false`). Pode ser usado como *health check* da hospedagem.
+`scheduler: "disabled"` quando a instância roda só a API (`SCHEDULER_ENABLED=false`), o caso do modo gratuito.
+
+**`worker`** só aparece quando `WORKER_EXPECTED_INTERVAL_MINUTES` está definido (checagens feitas por um worker externo, ex.: GitHub Actions).
+Ele é o **batimento real** do worker, lido da tabela `worker_runs`, e **nunca altera o código HTTP**: um agendamento atrasado
+do GitHub não pode fazer a hospedagem reiniciar a API.
+
+| Campo | Descrição |
+|---|---|
+| `status` | `ok` (última rodada bem-sucedida dentro do prazo) \| `late` (passou de `lateAfterMinutes`) \| `never` (nenhuma rodada bem-sucedida) \| `unknown` (não foi possível ler o batimento) |
+| `lastSuccessAt` | Fim da última rodada `ok` ou `truncated` (`null` se nunca) |
+| `ageSeconds` | Idade dessa rodada |
+| `expectedEveryMinutes` / `lateAfterMinutes` | Cadência esperada e limite para considerar atraso (padrão 3×) |
+| `lastRun` | Última rodada, qualquer resultado: `{ status, startedAt, finishedAt }` |
+
+A API estar no ar **não** significa que o worker esteja saudável: leia `worker.status`.
 
 **Exemplo**
 
@@ -133,7 +152,8 @@ cache-control: no-store
 
 {
   "status": "ok",
-  "scheduler": "ok"
+  "scheduler": "disabled",
+  "worker": { "status": "ok", "lastSuccessAt": "2026-10-27T04:52:03.114Z", "ageSeconds": 412, "expectedEveryMinutes": 15, "lateAfterMinutes": 45, "lastRun": { "status": "ok", "startedAt": "2026-10-27T04:52:00.201Z", "finishedAt": "2026-10-27T04:52:03.114Z" } }
 }
 ```
 
@@ -141,7 +161,7 @@ cache-control: no-store
 ### `GET /public/status`
 
 Todos os monitores (ativos e pausados), do mais antigo ao mais novo. **Entrada:** nenhuma.
-**Resposta `200`:** `{ generatedAt, monitors: [Monitor] }`.
+**Resposta `200`:** `{ generatedAt, checkRounds, monitors: [Monitor] }`. `checkRounds` é `{ "everyMinutes": 15 }` quando as checagens acontecem em rodadas agendadas (worker externo; a cadência real pode atrasar) ou `null` com o scheduler interno. Com `PUBLIC_CACHE_SECONDS>0` os monitores podem ter até esse tempo de atraso; `generatedAt` é sempre o relógio do servidor no momento da resposta.
 
 `Monitor`:
 
@@ -605,7 +625,7 @@ Abre a sessão. **Entrada (JSON):** `username` (string, 1–64) e `password` (st
 
 | Resposta | Quando |
 |---|---|
-| `200` | `{ username, csrfToken, expiresAt }` + cabeçalho `set-cookie` |
+| `200` | `{ username, csrfToken, expiresAt, limits }` + cabeçalho `set-cookie`. `limits`: `{ minIntervalSeconds, maxMonitors }` |
 | `400 validation_error` | Corpo ausente ou campos inválidos |
 | `401 invalid_credentials` | Usuário inexistente **ou** senha errada (mesma resposta e mesmo tempo) |
 | `403 origin_not_allowed` | `Origin` de outro site |
@@ -623,7 +643,7 @@ HTTP/1.1 200 OK
 set-cookie: pulse_session=<token>; Path=/; Expires=Tue, 27 Oct 2026 13:56:31 GMT; HttpOnly; SameSite=Strict
 cache-control: no-store
 
-{ "username": "admin", "csrfToken": "fnGxExs1TYGdt93ZqIiCzh35evaXgV4U2aKAjmV1Gtw", "expiresAt": "2026-10-27T13:56:31.189Z" }
+{ "username": "admin", "csrfToken": "fnGxExs1TYGdt93ZqIiCzh35evaXgV4U2aKAjmV1Gtw", "expiresAt": "2026-10-27T13:56:31.189Z", "limits": { "minIntervalSeconds": 30, "maxMonitors": 100 } }
 ```
 
 Em produção o cookie se chama `__Host-pulse_session` e inclui `Secure`.
@@ -687,7 +707,7 @@ retry-after: 900
 
 ### `GET /auth/session`
 
-Exige sessão. **Entrada:** nenhuma. **Resposta `200`:** `{ username, csrfToken, expiresAt }`. Erros: `401`.
+Exige sessão. **Entrada:** nenhuma. **Resposta `200`:** `{ username, csrfToken, expiresAt, limits: { minIntervalSeconds, maxMonitors } }`. Erros: `401`.
 
 **Exemplo**
 
@@ -700,7 +720,8 @@ cache-control: no-store
 {
   "username": "admin",
   "csrfToken": "39s6yJMXZCa0xrdnCGh7GccDlLbc6Lo3I4Q4jz2qTOA",
-  "expiresAt": "2026-10-27T13:58:04.688Z"
+  "expiresAt": "2026-10-27T13:58:04.688Z",
+  "limits": { "minIntervalSeconds": 30, "maxMonitors": 100 }
 }
 ```
 

@@ -1,7 +1,11 @@
 import type { PublicMonitor } from "../api/types";
 
-/** Intervalo entre atualizações da página pública. A resposta da API é cacheável por 10 s. */
-export const POLL_MS = 30_000;
+const pollSeconds = Number(import.meta.env.VITE_POLL_SECONDS);
+/**
+ * Intervalo entre atualizações da página pública (VITE_POLL_SECONDS, padrão 60 s, mínimo 15 s). No plano gratuito
+ * cada leitura pode acordar o banco, então vale um valor alto (ex.: 600): as checagens só mudam a cada rodada mesmo.
+ */
+export const POLL_MS = (Number.isFinite(pollSeconds) && pollSeconds >= 15 ? pollSeconds : 60) * 1000;
 /** Depois de quantas atualizações perdidas os dados em tela são considerados desatualizados. */
 export const STALE_AFTER_POLLS = 3;
 
@@ -20,8 +24,11 @@ export function estimateIntervalSeconds(m: PublicMonitor, serverNowMs: number): 
   return observedSeconds > 0 ? observedSeconds / checks : null;
 }
 
-/** Sem estimativa, qualquer checagem com mais de 15 min já merece um aviso. */
-const FALLBACK_STALE_SECONDS = 15 * 60;
+/**
+ * Sem estimativa (menos de 2 checagens em 24 h), uma checagem com mais de 1 h já merece um aviso. O valor precisa caber
+ * várias rodadas agendadas de 15 min (que o GitHub pode atrasar) sem acusar atraso falso.
+ */
+const FALLBACK_STALE_SECONDS = 60 * 60;
 const MIN_STALE_SECONDS = 120;
 const STALE_FACTOR = 3;
 

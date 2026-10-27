@@ -4,9 +4,15 @@ import { getDummyHash, verifyPassword } from "../auth/password.js";
 import { assertAllowedOrigin, cookieOptions, sessionCookieName } from "../auth/guards.js";
 import { createSession, destroySession, purgeExpiredSessions } from "../auth/session.js";
 import { checkLoginThrottle, clearLoginFailures, recordLoginFailure } from "../auth/throttle.js";
-import type { Config } from "../config.js";
+import { effectiveMinIntervalSeconds, type Config } from "../config.js";
 import type { Db } from "../lib/db.js";
 import { AppError } from "../lib/errors.js";
+
+/** Limites que o painel precisa conhecer (ex.: menor intervalo aceito), para não duplicá-los no frontend. */
+const limitsOf = (config: Config) => ({
+  minIntervalSeconds: effectiveMinIntervalSeconds(config),
+  maxMonitors: config.MAX_MONITORS,
+});
 
 const loginSchema = z.object({
   username: z.string().trim().min(1).max(64),
@@ -46,7 +52,7 @@ export function loginRoute(app: FastifyInstance, db: Db, config: Config): void {
     const session = await createSession(db, admin.id, config.SESSION_TTL_HOURS);
     reply.setCookie(sessionCookieName(config), session.token, cookieOptions(config, session.expiresAt));
     req.log.info({ ip: req.ip }, "login succeeded");
-    return { username: admin.username, csrfToken: session.csrfToken, expiresAt: session.expiresAt };
+    return { username: admin.username, csrfToken: session.csrfToken, expiresAt: session.expiresAt, limits: limitsOf(config) };
   });
 }
 
@@ -54,7 +60,7 @@ export function loginRoute(app: FastifyInstance, db: Db, config: Config): void {
 export function sessionRoutes(app: FastifyInstance, db: Db, config: Config): void {
   app.get("/auth/session", async (req) => {
     const s = req.session!;
-    return { username: s.username, csrfToken: s.csrfToken, expiresAt: s.expiresAt };
+    return { username: s.username, csrfToken: s.csrfToken, expiresAt: s.expiresAt, limits: limitsOf(config) };
   });
 
   app.post("/auth/logout", async (req, reply) => {

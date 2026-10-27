@@ -10,6 +10,11 @@ export interface SchedulerOptions {
   concurrency: number;
   timeoutMs: number;
   retentionDays: number;
+  /**
+   * "Vencido" inclui o que vence nos próximos N segundos. Só o worker one-shot usa (padrão 0): como roda de tempos em
+   * tempos, a rodada seguinte começa um pouco ANTES do vencimento e, sem folga, pularia o monitor até a rodada depois dela.
+   */
+  dueSlackSeconds?: number;
   /** Cria eventos de alerta ao abrir/resolver incidentes (ALERT_DELIVERY != off). */
   alertsEnabled?: boolean;
   /** Injetável para testes. */
@@ -22,6 +27,33 @@ interface DueMonitor {
 }
 
 const PURGE_EVERY_MS = 60 * 60_000;
+
+export interface DrainOptions {
+  /** Instante (epoch ms) depois do qual NÃO se reivindicam mais monitores. */
+  deadlineMs: number;
+  /** Instante depois do qual se desiste de esperar checagens em andamento. */
+  hardDeadlineMs: number;
+  /** Teto de monitores reivindicados nesta rodada. */
+  maxChecks: number;
+  signal?: AbortSignal;
+}
+
+export interface DrainResult {
+  claimed: number;
+  recorded: number;
+  /** Gravadas só no histórico: já existia uma checagem mais nova. */
+  stale: number;
+  /** Monitor excluído, pausado ou com URL alterada durante a checagem. */
+  discarded: number;
+  /** Falhas ao gravar (banco). A checagem é perdida, nunca repetida. */
+  errors: number;
+  /** Parou por atingir maxChecks com monitores ainda vencidos. */
+  truncated: boolean;
+  timedOut: boolean;
+  aborted: boolean;
+}
+
+type CheckOutcomeKind = "recorded" | "recorded_stale" | "discarded" | "error";
 
 /**
  * Loop independente da API. Garantias:
@@ -41,6 +73,7 @@ export class Scheduler {
   private lastClaimOkAt = 0;
   private readonly inFlight = new Set<Promise<void>>();
   private readonly check: (url: string) => Promise<CheckOutcome>;
+  private readonly slackSeconds: number;
 
   constructor(
     private readonly db: Db,
@@ -48,6 +81,7 @@ export class Scheduler {
     private readonly opts: SchedulerOptions,
   ) {
     this.check = opts.check ?? ((url) => httpCheck(url, { timeoutMs: opts.timeoutMs }));
+    this.slackSeconds = opts.dueSlackSeconds ?? 0;
   }
 
   start(): void {
@@ -84,7 +118,7 @@ export class Scheduler {
     try {
       const due = await this.claimDue(free);
       this.lastClaimOkAt = Date.now();
-      for (const m of due) this.track(this.checkOne(m));
+      for (const m of due) this.track(this.checkOne(m).then(() => undefined));
     } catch (err) {
       this.log.error({ err }, "scheduler tick failed");
     } finally {
@@ -97,13 +131,67 @@ export class Scheduler {
     while (this.inFlight.size > 0) await Promise.allSettled([...this.inFlight]);
   }
 
+  /** Há monitores vencidos que ainda não foram reivindicados? (sonda barata, sem reivindicar nada) */
+  async hasDue(): Promise<boolean> {
+    const rows = await this.db.$queryRaw<{ one: number }[]>`
+      SELECT 1 AS one FROM monitors
+      WHERE active AND next_check_at <= (now() AT TIME ZONE 'UTC') + make_interval(secs => ${this.slackSeconds}::double precision)
+      LIMIT 1`;
+    return rows.length > 0;
+  }
+
+  /**
+   * Uma rodada limitada, SEM timers: reivindica monitores vencidos em lotes (as mesmas garantias de concorrência do
+   * loop: UPDATE ... FOR UPDATE SKIP LOCKED que já reagenda), checa com `concurrency` vagas e devolve o balanço.
+   * Duas execuções sobrepostas nunca checam o mesmo monitor. Para de reivindicar no prazo, no teto ou ao ser abortada,
+   * e espera as checagens em andamento só até `hardDeadlineMs`.
+   */
+  async drain(o: DrainOptions): Promise<DrainResult> {
+    const r: DrainResult = { claimed: 0, recorded: 0, stale: 0, discarded: 0, errors: 0, truncated: false, timedOut: false, aborted: false };
+    const running = new Set<Promise<void>>();
+    const launch = (m: DueMonitor) => {
+      const p: Promise<void> = this.checkOne(m)
+        .then((k) => void (k === "recorded" ? r.recorded++ : k === "recorded_stale" ? r.stale++ : k === "discarded" ? r.discarded++ : r.errors++))
+        .finally(() => void running.delete(p));
+      running.add(p);
+    };
+
+    try {
+      for (;;) {
+        if (o.signal?.aborted) { r.aborted = true; break; }
+        if (Date.now() >= o.deadlineMs) { r.timedOut = true; break; }
+        if (r.claimed >= o.maxChecks) { r.truncated = await this.hasDue(); break; }
+        const free = this.opts.concurrency - running.size;
+        if (free <= 0) { await Promise.race(running); continue; }
+        const due = await this.claimDue(Math.min(free, o.maxChecks - r.claimed));
+        if (due.length === 0) break; // nada mais vencido
+        r.claimed += due.length;
+        for (const m of due) launch(m);
+      }
+    } catch (err) {
+      r.errors++;
+      this.log.error({ err }, "drain: claim failed");
+    }
+
+    // Espera as checagens em andamento (cada uma tem o próprio timeout), mas não além do prazo duro.
+    const wait = Math.max(0, o.hardDeadlineMs - Date.now());
+    let timer: NodeJS.Timeout | undefined;
+    const settled = await Promise.race([
+      Promise.allSettled([...running]).then(() => true),
+      new Promise<boolean>((res) => { timer = setTimeout(() => res(false), wait); }),
+    ]);
+    clearTimeout(timer);
+    if (!settled) r.timedOut = true; // o resultado dessas checagens se perde (at-most-once); o monitor já foi reagendado
+    return r;
+  }
+
   private claimDue(limit: number): Promise<DueMonitor[]> {
     return this.db.$queryRaw<DueMonitor[]>`
       UPDATE monitors
       SET next_check_at = (now() AT TIME ZONE 'UTC') + make_interval(secs => interval_seconds)
       WHERE id IN (
         SELECT id FROM monitors
-        WHERE active AND next_check_at <= (now() AT TIME ZONE 'UTC')
+        WHERE active AND next_check_at <= (now() AT TIME ZONE 'UTC') + make_interval(secs => ${this.slackSeconds}::double precision)
         ORDER BY next_check_at
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED
@@ -119,7 +207,7 @@ export class Scheduler {
     });
   }
 
-  private async checkOne(m: DueMonitor): Promise<void> {
+  private async checkOne(m: DueMonitor): Promise<CheckOutcomeKind> {
     const startedAt = new Date();
     try {
       const outcome = await this.check(m.url);
@@ -128,8 +216,10 @@ export class Scheduler {
         { monitorId: m.id, result, success: outcome.success, statusCode: outcome.statusCode, latencyMs: outcome.latencyMs, errorKind: outcome.errorKind },
         "check completed",
       );
+      return result;
     } catch (err) {
       this.log.error({ err, monitorId: m.id }, "check failed to record");
+      return "error";
     }
   }
 

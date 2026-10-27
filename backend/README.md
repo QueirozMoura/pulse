@@ -1,6 +1,10 @@
 # Pulse — backend
 
-API + scheduler de checagens (Node 22+, TypeScript, Fastify, PostgreSQL, Prisma 7).
+API + checagens (Node 22+, TypeScript, Fastify, PostgreSQL, Prisma 7). Dois modos de checagem:
+
+- **Gratuito (alvo de produção):** a API não checa nada. Um **worker one-shot** (`npm run worker:once`) roda a cada ~15 min no
+  GitHub Actions: checa os monitores vencidos, envia os alertas pendentes e termina. Veja [docs/DEPLOY.md](docs/DEPLOY.md).
+- **Contínuo (desenvolvimento ou hospedagem paga):** o scheduler interno (`SCHEDULER_ENABLED=true`), checagens a partir de 30 s.
 
 ## Rodando localmente
 
@@ -122,6 +126,8 @@ op read "op://cofre/pulse/senha" | npm run admin -- create --username gustavo
 - **Recomendado:** frontend e API no mesmo *site* (ex.: `app.exemplo.com` e `api.exemplo.com`). Use o padrão
   `SESSION_COOKIE_SAMESITE=strict` e defina `CORS_ALLOWED_ORIGIN=https://app.exemplo.com` (CORS com credenciais
   só para essa origem).
+- Hosts gratuitos (`*.onrender.com`, `*.netlify.app`, `*.vercel.app`...) estão na *Public Suffix List*: dois subdomínios são **sites diferentes**.
+  No plano gratuito o painel é servido pela própria API (`STATIC_DIR`), na mesma origem do cookie (ver [docs/DEPLOY.md §2](docs/DEPLOY.md)).
 - Frontend em outro site (ex.: `*.vercel.app` + `*.onrender.com`): `SESSION_COOKIE_SAMESITE=none`. Exige
   `NODE_ENV=production` e `CORS_ALLOWED_ORIGIN`, ou o processo não inicia. Cookies de terceiros são cada vez mais
   bloqueados pelos navegadores; prefira o mesmo site.
@@ -171,7 +177,34 @@ O Pulse faz requisições a URLs fornecidas por usuário, então o destino é va
 Limite conhecido: um DNS que devolva um IP público *diferente* do esperado (ex.: o dono do domínio troca o apontamento
 para outro serviço público) não é detectável, e não é o objetivo desta defesa.
 
-## Como o scheduler roda continuamente
+## Worker one-shot (modo gratuito)
+
+```bash
+npm run worker:once          # desenvolvimento (lê .env)
+npm run build && npm run worker:once:prod   # = node dist/worker/once.js (é o que o GitHub Actions executa)
+```
+
+Uma rodada: reivindica os monitores vencidos (`FOR UPDATE SKIP LOCKED`, mesma garantia do scheduler), checa, processa a outbox de
+alertas (envios e retentativas vencidas), faxina o histórico antigo, grava o batimento em `worker_runs` e **termina**. Não roda migrations,
+não cria administrador, não imprime segredos e tem prazo total (`WORKER_TIMEOUT_SECONDS`, padrão 240 s).
+Códigos de saída: `0` ok (inclui rodada truncada) · `1` falha · `2` configuração inválida ou migrations ausentes · `3` tempo esgotado · `130` cancelado.
+
+| Variável | Padrão | |
+|---|---|---|
+| `WORKER_TIMEOUT_SECONDS` | `240` | Tempo total da rodada (60–1500; ≥ `CHECK_TIMEOUT_MS` + 45 s) |
+| `WORKER_MAX_CHECKS` | `200` | Teto de checagens por rodada; o resto fica para a seguinte |
+| `WORKER_DUE_SLACK_SECONDS` | `300` | Folga: vence quem vence nos próximos N s (o cron do GitHub tem jitter) |
+| `WORKER_EXPECTED_INTERVAL_MINUTES` | — | **Na API**: cadência do worker. Habilita o bloco `worker` em `/health` e `checkRounds` em `/public/status` |
+| `WORKER_LATE_AFTER_MINUTES` | 3× a cadência | **Na API**: a partir de quando `worker.status` vira `late` |
+| `PUBLIC_CACHE_SECONDS` | `0` | Cache em memória das rotas públicas (poupa o Neon); invalidado por mudanças no painel |
+| `STATIC_DIR` | — | Serve o build do frontend na mesma origem (painel). Só `/`, `/s/*` e `/admin*` recebem o `index.html` |
+
+`/health/live` não consulta o banco (health check da hospedagem). `/health` informa o batimento real do worker em `worker` (`ok`, `late`,
+`never`, `unknown`) e **não** muda o código HTTP por atraso do worker. Testes com PostgreSQL real em `test/worker.integration.test.ts` (checagens,
+truncamento/retomada, sobreposição, falha parcial, timeout, cancelamento, outbox) e `test/worker-cli.integration.test.ts` (processo real, códigos
+de saída, redação de segredos). O workflow é validado por `test/workflow.test.ts`.
+
+## Como o scheduler roda continuamente (modo contínuo)
 
 O scheduler não depende de visitas à API. É um loop (`setInterval`) iniciado em `server.ts`, no mesmo processo do Fastify:
 
@@ -197,10 +230,9 @@ Garantias (todas cobertas por testes com PostgreSQL real, em `test/scheduler.int
 
 ### Hospedagem
 
-Veja **[docs/DEPLOY.md](docs/DEPLOY.md)**: estratégia (Render pago + Postgres gerenciado, ≈ US$ 13,30/mês), custos
-comparados com alternativas, dimensionamento medido, limitações, procedimento para criar e recuperar o administrador em
-produção e checklist de deploy. **Nada foi contratado nem implantado.**
-O plano gratuito da Render **não serve**: o serviço dorme após 15 min sem requisições (o scheduler para) e o Postgres gratuito expira em 30 dias.
+Veja **[docs/DEPLOY.md](docs/DEPLOY.md)**: arquitetura gratuita (Neon + Render + GitHub Actions + site estático), limites de cada plano com a conta
+de uso, passos exatos e riscos. **Nada foi contratado nem implantado.** O scheduler contínuo exige um processo sempre ligado
+(o plano gratuito da Render dorme após 15 min sem requisições), por isso o modo gratuito usa o worker agendado.
 
 ## Variáveis de ambiente
 

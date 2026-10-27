@@ -20,10 +20,10 @@ describe("frescor das checagens", () => {
     expect(isCheckStale(liveMonitor("operational", 100_000), NOW)).toBe(false);
     expect(isCheckStale(liveMonitor("operational", 130_000), NOW)).toBe(true);
   });
-  it("sem estimativa, só acusa depois de 15 min", () => {
+  it("sem estimativa, só acusa depois de 1 h (cabem várias rodadas de 15 min, mesmo atrasadas)", () => {
     const m = (agoMs: number) => mkMonitor({ state: "operational", lastCheck: { checkedAt: iso(agoMs), success: true, statusCode: 200, latencyMs: 5, errorKind: null } });
-    expect(isCheckStale(m(10 * 60_000), NOW)).toBe(false);
-    expect(isCheckStale(m(16 * 60_000), NOW)).toBe(true);
+    expect(isCheckStale(m(40 * 60_000), NOW)).toBe(false);
+    expect(isCheckStale(m(61 * 60_000), NOW)).toBe(true);
   });
   it("pausado e sem-dados nunca são 'atrasados'", () => {
     expect(isCheckStale(mkMonitor({ state: "paused", lastCheck: { checkedAt: iso(9e8), success: true, statusCode: 200, latencyMs: 1, errorKind: null } }), NOW)).toBe(false);

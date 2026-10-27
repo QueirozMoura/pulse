@@ -40,7 +40,7 @@ export async function setup(env: Record<string, string> = {}): Promise<Ctx> {
 
 export async function resetDb(db: Db): Promise<void> {
   await db.$executeRawUnsafe(
-    "TRUNCATE admin_users, sessions, login_failures, monitors, check_results, incidents RESTART IDENTITY CASCADE",
+    "TRUNCATE admin_users, sessions, login_failures, monitors, check_results, incidents, worker_runs RESTART IDENTITY CASCADE",
   );
 }
 

@@ -133,3 +133,25 @@ model AlertEvent {
   @@index([status, nextAttemptAt])
   @@map("alert_events")
 }
+
+// Uma linha por execução do worker one-shot (GitHub Actions). É o "batimento" do sistema de checagens:
+// o /health informa a última rodada bem-sucedida a partir daqui. Não guarda segredos nem dados de monitores.
+model WorkerRun {
+  id             String    @id @default(uuid()) @db.Uuid
+  startedAt      DateTime  @default(now()) @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  // running | ok | truncated | failed | timeout | cancelled | abandoned
+  status         String    @default("running")
+  // Origem da execução (schedule, workflow_dispatch, manual): vem de GITHUB_EVENT_NAME, nada sensível.
+  trigger        String?
+  checksClaimed  Int       @default(0) @map("checks_claimed")
+  checksRecorded Int       @default(0) @map("checks_recorded")
+  alertsSent     Int       @default(0) @map("alerts_sent")
+  alertsRetried  Int       @default(0) @map("alerts_retried")
+  alertsFailed   Int       @default(0) @map("alerts_failed")
+  errors         Int       @default(0)
+
+  @@index([startedAt])
+  @@index([status, finishedAt])
+  @@map("worker_runs")
+}
