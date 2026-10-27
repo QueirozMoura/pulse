@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MonitorStatus {
+  OPERATIONAL
+  UNAVAILABLE
+}
+
+model Monitor {
+  id                  String        @id @default(uuid()) @db.Uuid
+  name                String
+  url                 String
+  intervalSeconds     Int           @map("interval_seconds")
+  active              Boolean       @default(true)
+  status              MonitorStatus @default(OPERATIONAL)
+  consecutiveFailures Int           @default(0) @map("consecutive_failures")
+  // Agendamento vive no banco: sobrevive a restarts e permite várias instâncias.
+  nextCheckAt         DateTime      @default(now()) @map("next_check_at")
+  lastCheckedAt       DateTime?     @map("last_checked_at")
+  createdAt           DateTime      @default(now()) @map("created_at")
+
+  checks    CheckResult[]
+  incidents Incident[]
+
+  @@index([active, nextCheckAt])
+  @@map("monitors")
+}
+
+model CheckResult {
+  id         String   @id @default(uuid()) @db.Uuid
+  monitorId  String   @map("monitor_id") @db.Uuid
+  checkedAt  DateTime @default(now()) @map("checked_at")
+  success    Boolean
+  statusCode Int?     @map("status_code")
+  latencyMs  Int      @map("latency_ms")
+  // Categoria sanitizada (timeout, dns, connection, tls, http_status, unknown) — nunca a mensagem bruta.
+  errorKind  String?  @map("error_kind")
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@index([monitorId, checkedAt(sort: Desc)])
+  @@map("check_results")
+}
+
+model Incident {
+  id         String    @id @default(uuid()) @db.Uuid
+  monitorId  String    @map("monitor_id") @db.Uuid
+  startedAt  DateTime  @default(now()) @map("started_at")
+  resolvedAt DateTime? @map("resolved_at")
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@index([monitorId, startedAt(sort: Desc)])
+  @@map("incidents")
+}
