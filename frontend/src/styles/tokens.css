@@ -1,0 +1,49 @@
+/*
+ * Direção visual: central de operações. Um tema só (escuro), pensado para brilho controlado:
+ * marca em gradiente ultravioleta→gelo; estados (ok/queda/atenção/pausa) RESERVADOS e nunca usados como decoração.
+ */
+:root {
+  color-scheme: dark;
+
+  --font-display: "Archivo Variable", "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* superfícies, da mais funda para a mais próxima */
+  --void: #060912;
+  --deck: #0b1120;
+  --console: #111a2d;
+  --console-2: #18243d;
+  --rim: rgb(150 172 255 / 0.15);
+  --rim-strong: rgb(150 172 255 / 0.3);
+  /* borda que IDENTIFICA um campo de formulário: precisa de 3:1 contra o fundo (WCAG 1.4.11) */
+  --control-border: #7384b8;
+
+  /* texto */
+  --ink: #edf2ff;
+  --ink-2: #b0bcdc;
+  --ink-3: #8b9bc2;
+
+  /* marca */
+  --uv: #8e7cff;
+  --ice: #4fd8ff;
+  --grad: linear-gradient(115deg, var(--uv) 0%, var(--ice) 100%);
+  --brand-ink: #060912;
+
+  /* estados */
+  --ok: #35e8b0;
+  --down: #ff6a85;
+  --warn: #ffc25a;
+  --pause: #9aaccf;
+  --ok-wash: rgb(53 232 176 / 0.13);
+  --down-wash: rgb(255 106 133 / 0.14);
+  --warn-wash: rgb(255 194 90 / 0.14);
+  --pause-wash: rgb(154 172 207 / 0.13);
+  --ok-glow: rgb(53 232 176 / 0.45);
+  --down-glow: rgb(255 106 133 / 0.5);
+  --warn-glow: rgb(255 194 90 / 0.45);
+
+  --radius: 16px;
+  --radius-sm: 10px;
+  --focus: 0 0 0 2px var(--void), 0 0 0 4px var(--ice);
+  --ease: cubic-bezier(0.22, 0.8, 0.2, 1);
+}

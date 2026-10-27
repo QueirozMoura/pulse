@@ -1,0 +1,35 @@
+/* ---------- barra superior e rodapé ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  background: rgb(6 9 18 / 0.86);
+  border-bottom: 1px solid var(--rim);
+}
+.topbar__bar { display: flex; align-items: center; gap: 1rem; min-height: 4rem; }
+.topbar__actions { margin-left: auto; display: flex; align-items: center; gap: 0.9rem; }
+.topbar__link { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--ink-2); font-size: 0.95rem; text-decoration: none; }
+.topbar__link:hover { color: var(--ink); text-decoration: underline; }
+.who { color: var(--ink-2); font-size: 0.95rem; padding: 0.2rem 0.7rem; border: 1px solid var(--rim); border-radius: 999px; }
+
+.brand { display: inline-flex; align-items: center; gap: 0.65rem; color: var(--ink); text-decoration: none; }
+.brand__mark { flex: none; filter: drop-shadow(0 0 14px rgb(142 124 255 / 0.55)); }
+.brand__name { font-family: var(--font-display); font-weight: 900; font-stretch: 118%; font-size: 1.45rem; letter-spacing: -0.03em; }
+.brand__sub { color: var(--ink-3); font-size: 0.95rem; padding-left: 0.65rem; border-left: 1px solid var(--rim-strong); line-height: 1.2; }
+
+.site-main { padding-block: 0.5rem 5rem; }
+.site-footer { border-top: 1px solid var(--rim); padding-block: 1.75rem 2.75rem; color: var(--ink-3); font-size: 0.92rem; }
+.site-footer p + p { margin-top: 0.3rem; }
+
+/* ---------- seções ---------- */
+.section { margin-top: clamp(2.5rem, 6vw, 4rem); }
+.section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.section__title { font-size: clamp(1.45rem, 3vw, 1.9rem); }
+.section__note { color: var(--ink-3); font-size: 0.95rem; }
+
+.back-link { display: inline-flex; align-items: center; gap: 0.45rem; margin: 1.25rem 0 1rem; color: var(--ink-2); text-decoration: none; font-weight: 600; }
+.back-link:hover { color: var(--ink); }
+.back-link svg { transition: translate 0.2s var(--ease); }
+.back-link:hover svg { translate: -3px 0; }
+
+.stack { margin-bottom: 1rem; }
+.more-row { display: flex; justify-content: center; }
+.more { margin-top: 1rem; }

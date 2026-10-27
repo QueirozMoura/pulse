@@ -1,0 +1,61 @@
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; background: var(--void); }
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+/* Luz ambiente estática (nenhuma animação, nenhum filtro caro): dá profundidade sem competir com o conteúdo. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(60rem 38rem at 12% -8%, rgb(142 124 255 / 0.17), transparent 60%),
+    radial-gradient(52rem 34rem at 96% 4%, rgb(79 216 255 / 0.1), transparent 62%),
+    radial-gradient(70rem 40rem at 50% 118%, rgb(142 124 255 / 0.1), transparent 65%);
+}
+h1, h2, h3, h4 { margin: 0; font-family: var(--font-display); font-weight: 800; line-height: 1.04; letter-spacing: -0.02em; font-stretch: 112%; }
+p { margin: 0; }
+a { color: var(--ice); text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+ul { margin: 0; padding: 0; list-style: none; }
+:focus { outline: none; }
+:focus-visible { box-shadow: var(--focus); border-radius: 8px; }
+main:focus { box-shadow: none; }
+small { font-size: 0.875em; }
+time, .nowrap { white-space: nowrap; }
+::selection { background: rgb(142 124 255 / 0.45); color: #fff; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; left: 1rem; top: -4rem; z-index: 200;
+  background: var(--grad); color: var(--brand-ink); padding: 0.65rem 1.1rem; border-radius: var(--radius-sm);
+  font-weight: 700; text-decoration: none;
+}
+.skip-link:focus { top: 1rem; }
+
+.container { width: min(100% - 2rem, 70rem); margin-inline: auto; }
+.container--wide { width: min(100% - 2rem, 76rem); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+@media (forced-colors: active) {
+  .unit, .panel { border: 1px solid CanvasText; }
+}

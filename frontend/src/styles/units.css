@@ -1,0 +1,54 @@
+/* ---------- painéis dos sistemas ---------- */
+.units { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); gap: 1rem; align-items: start; }
+.unit {
+  --st: var(--pause); --st-glow: rgb(154 172 207 / 0.3);
+  position: relative; display: grid; align-content: start; gap: 0.85rem; padding: 1.15rem 1.3rem 1.3rem 1.55rem;
+  border: 1px solid var(--rim); border-radius: var(--radius); overflow: hidden;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.05), rgb(255 255 255 / 0.012) 60%), var(--console);
+  transition: translate 0.25s var(--ease), border-color 0.25s, box-shadow 0.25s;
+}
+.unit:hover { translate: 0 -3px; border-color: var(--rim-strong); box-shadow: 0 22px 44px -26px rgb(0 0 0 / 0.85), 0 0 40px -22px var(--st-glow); }
+.unit--operational { --st: var(--ok); --st-glow: var(--ok-glow); }
+.unit--unavailable { --st: var(--down); --st-glow: var(--down-glow); border-color: rgb(255 106 133 / 0.38);
+  background: radial-gradient(36rem 14rem at 0% 0%, rgb(255 106 133 / 0.16), transparent 70%), linear-gradient(180deg, rgb(255 255 255 / 0.05), rgb(255 255 255 / 0.012) 60%), var(--console); }
+.unit--late { --st: var(--warn); --st-glow: var(--warn-glow); border-color: rgb(255 194 90 / 0.35); }
+.unit--paused, .unit--no_data {
+  background: repeating-linear-gradient(135deg, rgb(154 172 207 / 0.045) 0 9px, transparent 9px 18px), var(--deck);
+}
+.unit--paused .unit__name a, .unit--no_data .unit__name a { color: var(--ink-2); }
+.unit__rail { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--st); box-shadow: 0 0 18px var(--st-glow); }
+.unit--paused .unit__rail, .unit--no_data .unit__rail { box-shadow: none; opacity: 0.7; }
+.unit--no_data .unit__rail { background: repeating-linear-gradient(0deg, var(--st) 0 5px, transparent 5px 10px); }
+.unit--flash { animation: flash 1.8s ease-out; }
+@keyframes flash { 0% { box-shadow: 0 0 0 0 var(--st-glow), 0 0 0 1px var(--st); } 100% { box-shadow: 0 0 0 22px transparent, 0 0 0 1px transparent; } }
+
+/* O selo vai para a linha de baixo quando não cabe ao lado do nome: o título nunca é espremido. */
+.unit__head { display: flex; align-items: center; gap: 0.6rem 0.75rem; flex-wrap: wrap; }
+.unit__name { font-size: clamp(1.25rem, 2.4vw, 1.5rem); font-stretch: 108%; flex: 1 1 11rem; min-width: 0; overflow-wrap: anywhere; }
+.unit__head .badge { flex: none; }
+.unit__name a { color: var(--ink); text-decoration: none; background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat; transition: background-size 0.25s var(--ease); }
+.unit__name a:hover { background-size: 100% 1px; }
+.unit__note { color: var(--ink-2); }
+.unit__note--late { color: var(--warn); font-weight: 700; }
+.unit__alert {
+  display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; align-items: baseline; padding: 0.7rem 0.95rem; border-radius: 12px;
+  background: var(--down-wash); border: 1px solid rgb(255 106 133 / 0.34); color: var(--down); font-weight: 700;
+}
+.unit__alert time { font-family: var(--font-display); font-stretch: 110%; }
+.unit__alert small { font-weight: 400; opacity: 0.85; }
+
+.unit__facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 1.25rem; margin: 0.15rem 0 0; }
+.fact dt { color: var(--ink-3); font-size: 0.9rem; }
+.fact dd { margin: 0.15rem 0 0; font-weight: 700; }
+.fact--wide { grid-column: 1 / -1; }
+.fact__big { font-family: var(--font-display); font-weight: 800; font-stretch: 114%; font-size: clamp(1.9rem, 4vw, 2.5rem); letter-spacing: -0.03em; line-height: 1.05; }
+.fact__sub { display: block; color: var(--ink-3); font-weight: 400; }
+.fact__sub--down { color: var(--down); font-weight: 700; }
+.fact__none { color: var(--ink-3); font-weight: 400; }
+@media (min-width: 52rem) {
+  .unit--unavailable { grid-column: span 2; }
+  .unit--unavailable .unit__facts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+/* dados desatualizados: tira a "cor de verdade" dos estados sem esconder a última leitura */
+.units--stale { filter: saturate(0.3) brightness(0.9); }
+.units--stale .live__ring { animation: none; }
