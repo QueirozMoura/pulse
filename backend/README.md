@@ -5,40 +5,132 @@ API + scheduler de checagens (Node 22+, TypeScript, Fastify, PostgreSQL, Prisma 
 ## Rodando localmente
 
 ```bash
-cp .env.example .env              # NODE_ENV=development e ADMIN_ROUTES_ENABLED=true
+cp .env.example .env              # NODE_ENV=development
 docker compose up -d --wait       # Postgres em localhost:5433
 npm install
 npm run db:deploy                 # aplica as migrations
+npm run admin -- create --username <usuario>   # cria o administrador (veja abaixo)
 npm run dev                       # http://localhost:3000
-npm test && npm run typecheck && npm run build
+npm run typecheck && npm run build
 ```
 
 Para ver o ciclo completo sem esperar, use `MIN_INTERVAL_SECONDS=5` no `.env` e cadastre um monitor com `intervalSeconds: 5`.
 
+### Testes
+
+`npm test` roda os testes sem banco (lógica de estados, checagem HTTP, SSRF, hash, gating das rotas).
+Os testes de integração (autenticação, sessões, CSRF, operações administrativas) precisam de um Postgres **descartável**
+e são **pulados** sem ele; eles apagam as tabelas:
+
+```bash
+createdb -h localhost -p 5433 -U pulse pulse_test        # ou qualquer banco vazio de teste
+export TEST_DATABASE_URL=postgresql://pulse:pulse@localhost:5433/pulse_test
+DATABASE_URL=$TEST_DATABASE_URL npm run db:deploy
+npm test
+```
+
 ## Endpoints
 
-| Rota | Acesso | Descrição |
-|---|---|---|
-| `GET /health` | público | Estado do Pulse e conectividade com o banco (503 se o banco cair) |
-| `GET /public/status` | público | Estado atual de cada monitor, última latência, incidente em andamento |
-| `GET /public/monitors/:id/history?limit=` | público | Checagens recentes (máx. 200) e últimos incidentes |
-| `POST /monitors`, `GET /monitors` | **somente dev** | Cadastro/listagem (inclui a URL). Ver "Rotas de escrita" |
+**Públicos (sem login)**
 
-Os endpoints públicos nunca devolvem a URL monitorada nem mensagens de erro: apenas uma categoria
-(`timeout`, `dns`, `connection`, `tls`, `http_status`, `redirect`, `blocked`, `unknown`).
+| Rota | Descrição |
+|---|---|
+| `GET /health` | Estado do Pulse e conectividade com o banco (503 se o banco cair) |
+| `GET /public/status` | Estado atual de cada monitor ativo, última latência, incidente em andamento |
+| `GET /public/monitors/:id/history?limit=` | Checagens recentes (máx. 200) e últimos incidentes |
 
-## Rotas de escrita inacessíveis em produção
+Nunca devolvem a URL monitorada nem mensagens de erro: apenas uma categoria
+(`timeout`, `dns`, `connection`, `tls`, `http_status`, `redirect`, `blocked`, `unknown`). Monitores pausados somem daqui.
 
-Enquanto não há autenticação, `POST /monitors` e `GET /monitors` são protegidas em três camadas
-(testes em `test/admin-routes.test.ts`):
+**Autenticação**
 
-1. **Não são registradas.** Sem `ADMIN_ROUTES_ENABLED=true`, as rotas não existem no Fastify: a resposta é 404, não 401/403.
-   O padrão da flag é `false`.
-2. **Produção não aceita a flag.** `NODE_ENV=production` com `ADMIN_ROUTES_ENABLED=true` faz o processo
-   **falhar na inicialização** (`loadConfig`). Não dá para ligar por engano em um deploy.
-3. **Falha fechada.** `NODE_ENV` ausente vale `production`; só um `NODE_ENV=development` explícito permite a flag.
+| Rota | Descrição |
+|---|---|
+| `POST /auth/login` `{username, password}` | Abre a sessão (cookie) e devolve `csrfToken`. Limitada por tentativas |
+| `GET /auth/session` | Usuário logado + `csrfToken` (para o frontend recuperar o token após recarregar) |
+| `POST /auth/logout` | Encerra a sessão no servidor e limpa o cookie |
 
-Consequência prática: em produção ainda não há como cadastrar monitores pela API. Isso é intencional até a etapa de autenticação.
+**Administração (exigem sessão; escritas exigem `X-CSRF-Token`)**
+
+| Rota | Descrição |
+|---|---|
+| `POST /monitors` `{name, url, intervalSeconds}` | Cadastra (201) |
+| `GET /monitors`, `GET /monitors/:id` | Lista / detalha (inclui URL e estado interno) |
+| `PATCH /monitors/:id` | Edita `name`, `url`, `intervalSeconds` (ao menos um; campos extras são rejeitados) |
+| `POST /monitors/:id/pause`, `POST /monitors/:id/resume` | Pausa / retoma |
+| `DELETE /monitors/:id` | Exclui (204); checagens e incidentes saem em cascata |
+
+Erros: `401 unauthorized`, `403 csrf` / `origin_not_allowed`, `400 validation_error`, `404 not_found`, `429 too_many_attempts` (com `Retry-After`).
+
+## Autenticação
+
+Uma única conta de administrador. Nada de senha ou segredo no repositório: a senha só existe no seu terminal e,
+depois, como hash no banco.
+
+### Criando o primeiro administrador
+
+A conta é criada por uma CLI, nunca por variável de ambiente nem por endpoint. A senha **não** vai em argumento
+(ficaria no histórico do shell e no `ps`): é pedida num prompt oculto, ou lida da primeira linha do stdin.
+
+```bash
+# desenvolvimento
+npm run admin -- create --username gustavo         # pede a senha duas vezes (mín. 12 caracteres)
+
+# produção: rode contra o banco de produção, de uma máquina sua, ou no shell do serviço (se o plano tiver)
+DATABASE_URL='postgresql://...' npm run admin -- create --username gustavo
+#   ou, depois do build:  DATABASE_URL=... node dist/cli/admin.js create --username gustavo
+
+# sem terminal (ex.: gerenciador de segredos), a senha vem pelo stdin:
+op read "op://cofre/pulse/senha" | npm run admin -- create --username gustavo
+```
+
+- Só existe **uma** conta: `create` recusa uma segunda, e o banco também (índice único). Para trocar a senha:
+  `npm run admin -- reset-password`. Isso **encerra todas as sessões** abertas.
+- Política: 12 a 128 caracteres, e a senha não pode conter o nome de usuário. Hash: **scrypt** (N=2^16, r=8, p=1,
+  salt aleatório de 16 bytes), com os parâmetros dentro do hash para permitir evoluí-los.
+- Se perder a senha: `reset-password` com acesso ao banco. Não há "esqueci minha senha" por e-mail.
+
+### Sessão
+
+- Login gera um token aleatório de 256 bits enviado em cookie; o banco guarda **só o SHA-256** dele. Um vazamento do
+  banco não entrega sessões utilizáveis. Duração absoluta de `SESSION_TTL_HOURS` (12 h); logout apaga no servidor.
+- Cookie: `HttpOnly` (JavaScript não lê), `Path=/`, `SameSite=Strict` e, em produção, `Secure` com prefixo `__Host-`
+  (o navegador recusa o cookie se não for Secure/sem Domain). Em desenvolvimento (HTTP) o nome é `pulse_session` sem Secure.
+- `Cache-Control: no-store` nas respostas de autenticação e administração.
+
+### Frontend e `SameSite`
+
+- **Recomendado:** frontend e API no mesmo *site* (ex.: `app.exemplo.com` e `api.exemplo.com`). Use o padrão
+  `SESSION_COOKIE_SAMESITE=strict` e defina `CORS_ALLOWED_ORIGIN=https://app.exemplo.com` (CORS com credenciais
+  só para essa origem).
+- Frontend em outro site (ex.: `*.vercel.app` + `*.onrender.com`): `SESSION_COOKIE_SAMESITE=none`. Exige
+  `NODE_ENV=production` e `CORS_ALLOWED_ORIGIN`, ou o processo não inicia. Cookies de terceiros são cada vez mais
+  bloqueados pelos navegadores; prefira o mesmo site.
+
+### CSRF
+
+Defesa em três camadas, para toda operação que altera estado (`POST`/`PATCH`/`DELETE`, inclusive logout):
+1. `SameSite` do cookie;
+2. cabeçalho `Origin`, quando presente, precisa ser o próprio servidor ou `CORS_ALLOWED_ORIGIN` (vale também para o login);
+3. token CSRF por sessão no cabeçalho `X-CSRF-Token` (recebido no login / `GET /auth/session`), comparado em tempo constante.
+
+### Limite de tentativas de login
+
+Falhas ficam no banco (valem entre instâncias e restarts). Por padrão, em 15 minutos: **5 falhas por IP** bloqueiam aquele IP
+e **30 falhas globais** bloqueiam todos (limita ataques distribuídos). Bloqueado = `429` com `Retry-After`, **sem** executar
+o scrypt. Efeito colateral aceito: durante um ataque distribuído o próprio administrador pode esperar até a janela esvaziar.
+Usuário inexistente e senha errada dão a mesma resposta e custam o mesmo tempo.
+Atrás de proxy, configure `TRUST_PROXY_HOPS` (normalmente `1`) para que `req.ip` seja o do cliente; com `0` o IP é o do
+proxy e o limite por IP vira praticamente um limite global. Não use um valor maior que o número real de proxies,
+senão o cliente forja `X-Forwarded-For` e escapa do limite.
+
+### Como as rotas administrativas ficam protegidas
+
+Não há mais flag nem modo de desenvolvimento sem login (`ADMIN_ROUTES_ENABLED` foi removida; a variável, se ainda
+existir no ambiente, é ignorada). Toda rota administrativa é registrada num único escopo do Fastify (`src/app.ts`) cujos
+hooks `onRequest` aplicam sessão e CSRF antes de qualquer parsing de corpo. Só `GET /health`, as rotas `/public/*` e
+`POST /auth/login` ficam fora dele. `test/auth-gating.test.ts` percorre **todas** as rotas registradas: qualquer rota
+nova que não esteja na lista pública e não esteja no escopo protegido quebra o teste.
 
 ## Proteção contra SSRF e redirects
 
@@ -103,4 +195,5 @@ checagem por conexão curta). Recomendo reavaliar preços e limites no painel an
 ## Variáveis de ambiente
 
 Ver `.env.example`. Obrigatória: `DATABASE_URL`. Demais têm padrão seguro (`NODE_ENV=production`,
-`ADMIN_ROUTES_ENABLED=false`, `CHECK_TIMEOUT_MS=10000`, `MIN_INTERVAL_SECONDS=30`).
+`SESSION_COOKIE_SAMESITE=strict`, `CHECK_TIMEOUT_MS=10000`, `MIN_INTERVAL_SECONDS=30`). Em produção defina também
+`TRUST_PROXY_HOPS` e, se houver frontend, `CORS_ALLOWED_ORIGIN`.

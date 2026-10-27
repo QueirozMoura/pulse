@@ -11,8 +11,18 @@ const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   DATABASE_URL: z.string().min(1),
-  // Rotas de gerenciamento (POST/GET /monitors). Sem autenticação ainda: só podem existir fora de produção.
-  ADMIN_ROUTES_ENABLED: boolFromEnv.default(false),
+  // --- Autenticação ---
+  SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(12),
+  // "strict" exige frontend no mesmo site (ex.: app.exemplo.com + api.exemplo.com).
+  // "none" é para frontend em outro site; exige produção (cookie Secure) e CORS_ALLOWED_ORIGIN.
+  SESSION_COOKIE_SAMESITE: z.enum(["strict", "none"]).default("strict"),
+  // Origem do frontend (ex.: https://app.exemplo.com). Ativa CORS com credenciais só para ela.
+  CORS_ALLOWED_ORIGIN: z.url().optional(),
+  // Quantos proxies confiáveis existem à frente (define req.ip a partir de X-Forwarded-For). 0 = nenhum.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+  LOGIN_WINDOW_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+  LOGIN_MAX_FAILURES_PER_IP: z.coerce.number().int().min(1).default(5),
+  LOGIN_MAX_FAILURES_GLOBAL: z.coerce.number().int().min(1).default(30),
   SCHEDULER_ENABLED: boolFromEnv.default(true),
   SCHEDULER_TICK_MS: z.coerce.number().int().min(100).default(5000),
   SCHEDULER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
@@ -30,10 +40,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .join("; ");
     throw new Error(`Invalid environment configuration: ${problems}`);
   }
-  if (parsed.data.NODE_ENV === "production" && parsed.data.ADMIN_ROUTES_ENABLED) {
-    throw new Error(
-      "ADMIN_ROUTES_ENABLED=true é proibido com NODE_ENV=production: as rotas de escrita não têm autenticação.",
-    );
+  const c = parsed.data;
+  if (c.SESSION_COOKIE_SAMESITE === "none" && (c.NODE_ENV !== "production" || !c.CORS_ALLOWED_ORIGIN)) {
+    throw new Error("SESSION_COOKIE_SAMESITE=none exige NODE_ENV=production e CORS_ALLOWED_ORIGIN.");
   }
   return parsed.data;
 }
