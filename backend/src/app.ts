@@ -76,6 +76,9 @@ export function buildApp(config: Config, db: Db, deps: AppDeps = {}): FastifyIns
       credentials: true,
       methods: ["GET", "POST", "PATCH", "DELETE"],
       allowedHeaders: ["content-type", "x-csrf-token"],
+      // Sem isto o navegador esconde estes cabeçalhos do JavaScript do frontend (só os "seguros" são legíveis entre
+      // origens): o frontend não saberia quanto esperar num 429. Só a origem já autorizada os lê.
+      exposedHeaders: ["retry-after", "x-request-id"],
     });
   }
 

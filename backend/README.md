@@ -114,6 +114,11 @@ op read "op://cofre/pulse/senha" | npm run admin -- create --username gustavo
 
 ### Frontend e `SameSite`
 
+> **Desenvolvimento:** o `frontend/` roda em `http://localhost:5173` e a API em `http://localhost:3000`. São origens diferentes
+> mas o **mesmo site** (a porta não conta), então o cookie `SameSite=Strict` funciona sem afrouxar nada, desde que **os dois usem
+> `localhost`** (não `127.0.0.1`) e o backend tenha `CORS_ALLOWED_ORIGIN=http://localhost:5173` (já vem no `.env.example`).
+> O backend expõe `Retry-After` e `X-Request-Id` ao frontend (`exposedHeaders`), senão o navegador os esconde do JavaScript.
+
 - **Recomendado:** frontend e API no mesmo *site* (ex.: `app.exemplo.com` e `api.exemplo.com`). Use o padrão
   `SESSION_COOKIE_SAMESITE=strict` e defina `CORS_ALLOWED_ORIGIN=https://app.exemplo.com` (CORS com credenciais
   só para essa origem).

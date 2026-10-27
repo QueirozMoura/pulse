@@ -222,6 +222,14 @@ describe.skipIf(!TEST_DB_URL)("autenticação (PostgreSQL real)", () => {
         const bad = await x.app.inject({ method: "POST", url: "/monitors", payload: validBody, headers: authed(l, { origin: "https://app.evil.com" }) });
         expect([ok.statusCode, bad.statusCode]).toEqual([201, 403]);
 
+        // O frontend precisa LER Retry-After (429) e X-Request-Id entre origens: tem de estar em expose-headers.
+        const real = await x.app.inject({ method: "GET", url: "/public/status", headers: { origin: "https://app.exemplo.com" } });
+        const exposed = String(real.headers["access-control-expose-headers"]).toLowerCase();
+        expect(exposed).toContain("retry-after");
+        expect(exposed).toContain("x-request-id");
+        expect(exposed).not.toContain("set-cookie");
+        expect(exposed).not.toContain("*");
+
         const pre = await x.app.inject({ method: "OPTIONS", url: "/monitors", headers: { origin: "https://app.exemplo.com", "access-control-request-method": "POST" } });
         expect(pre.headers["access-control-allow-origin"]).toBe("https://app.exemplo.com");
         expect(pre.headers["access-control-allow-credentials"]).toBe("true");

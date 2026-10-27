@@ -14,6 +14,7 @@ substituídos por `<token>`. `test/api-docs.test.ts` falha se uma rota registrad
 | Corpo máximo | 16 KB (`413 payload_too_large`) |
 | Campos desconhecidos | Rejeitados com `400` nas rotas administrativas (sem *mass assignment*); ignorados em *query strings* |
 | Cache | Rotas `/public/*`: `cache-control: public, max-age=10`. Todo o resto: `no-store`. Erros nunca são cacheados |
+| CORS | Só com `CORS_ALLOWED_ORIGIN` definido, e só para essa origem (com credenciais). Métodos `GET, POST, PATCH, DELETE`; cabeçalhos aceitos `content-type` e `x-csrf-token`. Cabeçalhos **legíveis pelo JavaScript** do frontend além dos básicos: `retry-after` (429) e `x-request-id` |
 | Rastreio | Toda resposta traz o cabeçalho `x-request-id`; o mesmo valor vai em `requestId` nos erros e nos logs do servidor |
 | Compatibilidade | Campos novos podem ser **adicionados** a qualquer resposta (o cliente deve ignorar campos que não conhece). Remover/renomear campo, mudar tipo ou semântica é mudança incompatível |
 

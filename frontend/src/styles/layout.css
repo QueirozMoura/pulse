@@ -1,0 +1,17 @@
+.site-header { border-bottom: 1px solid var(--hairline); background: var(--surface); }
+.site-header__bar { display: flex; align-items: center; gap: 1rem; min-height: 3.75rem; }
+.brand { display: inline-flex; align-items: center; gap: 0.6rem; color: var(--ink); text-decoration: none; font-family: var(--font-display); font-weight: 800; font-size: 1.35rem; letter-spacing: -0.02em; }
+.brand__mark { width: 1.9rem; height: 1.9rem; flex: none; }
+.brand__sub { font-family: var(--font-body); font-weight: 400; font-size: 0.95rem; color: var(--ink-2); letter-spacing: 0; }
+.site-header__actions { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
+.site-main { padding-block: 2rem 4rem; }
+.site-main:focus { outline: none; }
+.site-footer { border-top: 1px solid var(--hairline); padding-block: 1.5rem 2.5rem; color: var(--ink-2); font-size: 0.9rem; }
+.site-footer p + p { margin-top: 0.25rem; }
+
+.section { margin-top: 2.75rem; }
+.section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.section__title { font-size: 1.4rem; }
+.section__note { color: var(--ink-2); font-size: 0.95rem; }
+
+.back-link { display: inline-flex; align-items: center; gap: 0.35rem; margin-bottom: 1.25rem; }
