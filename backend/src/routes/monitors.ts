@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Db } from "../lib/db.js";
-import { notFound } from "../lib/errors.js";
+import { AppError, notFound } from "../lib/errors.js";
 import { monitorUrlSchema } from "../domain/monitor-url.js";
 
 const MAX_INTERVAL_SECONDS = 86_400;
@@ -10,7 +10,13 @@ const MAX_INTERVAL_SECONDS = 86_400;
  * Administração de monitores. Só é registrada dentro do escopo protegido
  * (autenticação + CSRF); inclui a URL monitorada, por isso nunca é pública.
  */
-export function monitorRoutes(app: FastifyInstance, db: Db, minIntervalSeconds: number): void {
+export function monitorRoutes(
+  app: FastifyInstance,
+  db: Db,
+  limits: { minIntervalSeconds: number; checkTimeoutMs: number; maxMonitors: number },
+): void {
+  // O intervalo precisa ser maior que o timeout: assim a checagem anterior sempre termina antes da próxima.
+  const minIntervalSeconds = Math.max(limits.minIntervalSeconds, Math.floor(limits.checkTimeoutMs / 1000) + 1);
   const name = z.string().trim().min(1).max(100);
   const intervalSeconds = z.number().int().min(minIntervalSeconds).max(MAX_INTERVAL_SECONDS);
 
@@ -29,6 +35,9 @@ export function monitorRoutes(app: FastifyInstance, db: Db, minIntervalSeconds: 
 
   app.post("/monitors", async (req, reply) => {
     const body = createSchema.parse(req.body);
+    if ((await db.monitor.count()) >= limits.maxMonitors) {
+      throw new AppError(409, "monitor_limit_reached", `Limite de ${limits.maxMonitors} monitores atingido`);
+    }
     const monitor = await db.monitor.create({ data: { ...body, nextCheckAt: new Date() } });
     return reply.code(201).send(toDto(monitor));
   });

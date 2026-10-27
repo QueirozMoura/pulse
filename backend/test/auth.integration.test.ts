@@ -55,7 +55,8 @@ describe.skipIf(!TEST_DB_URL)("autenticação (PostgreSQL real)", () => {
       const wrongUser = await post("/auth/login", { username: "ninguem", password: ADMIN_PASSWORD });
       expect(wrongPass.statusCode).toBe(401);
       expect(wrongUser.statusCode).toBe(401);
-      expect(wrongPass.json()).toEqual(wrongUser.json());
+      const strip = ({ requestId: _r, ...rest }: Record<string, unknown>) => rest; // requestId difere por requisição
+      expect(strip(wrongPass.json())).toEqual(strip(wrongUser.json()));
       expect(wrongPass.headers["set-cookie"]).toBeUndefined();
     });
 

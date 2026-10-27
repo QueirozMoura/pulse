@@ -67,3 +67,34 @@ export async function login(
 
 export const authed = (l: Login, extra: Record<string, string> = {}) => ({ cookie: l.cookie, "x-csrf-token": l.csrf, ...extra });
 export const validBody = { name: "Site", url: "https://example.com", intervalSeconds: 60 };
+
+export async function mkMonitors(
+  db: Db,
+  n: number,
+  over: { intervalSeconds?: number; nextCheckAt?: Date; active?: boolean; prefix?: string } = {},
+) {
+  const prefix = over.prefix ?? "m";
+  await db.monitor.createMany({
+    data: Array.from({ length: n }, (_, i) => ({
+      name: `${prefix}${i}`,
+      url: `https://${prefix}${i}.example.com/`,
+      intervalSeconds: over.intervalSeconds ?? 60,
+      nextCheckAt: over.nextCheckAt ?? new Date(Date.now() - 1000),
+      active: over.active ?? true,
+    })),
+  });
+  return db.monitor.findMany({ where: { name: { startsWith: prefix } }, orderBy: { name: "asc" } });
+}
+
+export const ok = { success: true, statusCode: 200, latencyMs: 20, errorKind: null } as const;
+export const down = { success: false, statusCode: null, latencyMs: 20, errorKind: "dns" } as const;
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export async function waitFor(cond: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await cond()) return;
+    await sleep(25);
+  }
+  throw new Error("waitFor: condição não atendida a tempo");
+}

@@ -29,38 +29,52 @@ DATABASE_URL=$TEST_DATABASE_URL npm run db:deploy
 npm test
 ```
 
-## Endpoints
+## API
 
-**Públicos (sem login)**
+O contrato completo (entradas, respostas, erros, exemplos reais capturados do servidor) está em
+**[docs/API.md](docs/API.md)**. Um teste (`test/api-docs.test.ts`) falha se uma rota existir sem estar documentada.
 
-| Rota | Descrição |
+| Grupo | Rotas |
 |---|---|
-| `GET /health` | Estado do Pulse e conectividade com o banco (503 se o banco cair) |
-| `GET /public/status` | Estado atual de cada monitor ativo, última latência, incidente em andamento |
-| `GET /public/monitors/:id/history?limit=` | Checagens recentes (máx. 200) e últimos incidentes |
+| Público (sem login) | `GET /health`, `GET /public/status`, `GET /public/monitors/:id`, `GET /public/monitors/:id/history`, `GET /public/incidents` |
+| Autenticação | `POST /auth/login`, `GET /auth/session`, `POST /auth/logout` |
+| Administração (sessão + CSRF) | `POST/GET /monitors`, `GET/PATCH/DELETE /monitors/:id`, `POST /monitors/:id/pause`, `POST /monitors/:id/resume` |
 
-Nunca devolvem a URL monitorada nem mensagens de erro: apenas uma categoria
-(`timeout`, `dns`, `connection`, `tls`, `http_status`, `redirect`, `blocked`, `unknown`). Monitores pausados somem daqui.
+Pontos que valem repetir: formato de erro único (`{ error, message, requestId, issues? }`); estados públicos
+`operational | unavailable | paused | no_data`; uptime `null` quando não há checagens; listas longas com cursor e teto de `limit`;
+as rotas públicas nunca expõem a URL monitorada nem detalhes internos.
 
-**Autenticação**
+### Cadastrando monitores em produção
 
-| Rota | Descrição |
-|---|---|
-| `POST /auth/login` `{username, password}` | Abre a sessão (cookie) e devolve `csrfToken`. Limitada por tentativas |
-| `GET /auth/session` | Usuário logado + `csrfToken` (para o frontend recuperar o token após recarregar) |
-| `POST /auth/logout` | Encerra a sessão no servidor e limpa o cookie |
+Em produção só existe o caminho autenticado (não há flag nem modo aberto). Faça login e use o cookie + `X-CSRF-Token`:
 
-**Administração (exigem sessão; escritas exigem `X-CSRF-Token`)**
+```bash
+API=https://sua-api.exemplo.com
+curl -s -c jar -X POST $API/auth/login -H 'content-type: application/json' \
+  -d '{"username":"seu-usuario","password":"..."}' > login.json         # digite a senha com cuidado com o histórico do shell
+CSRF=$(jq -r .csrfToken login.json)
+curl -s -b jar -X POST $API/monitors -H 'content-type: application/json' -H "x-csrf-token: $CSRF" \
+  -d '{"name":"Meu site","url":"https://meusite.exemplo.com","intervalSeconds":60}'
+```
 
-| Rota | Descrição |
-|---|---|
-| `POST /monitors` `{name, url, intervalSeconds}` | Cadastra (201) |
-| `GET /monitors`, `GET /monitors/:id` | Lista / detalha (inclui URL e estado interno) |
-| `PATCH /monitors/:id` | Edita `name`, `url`, `intervalSeconds` (ao menos um; campos extras são rejeitados) |
-| `POST /monitors/:id/pause`, `POST /monitors/:id/resume` | Pausa / retoma |
-| `DELETE /monitors/:id` | Exclui (204); checagens e incidentes saem em cascata |
+(Em produção o cookie é `Secure`; o `curl -c/-b` só o reenvia por HTTPS.) O frontend fará o mesmo com `credentials: "include"`.
 
-Erros: `401 unauthorized`, `403 csrf` / `origin_not_allowed`, `400 validation_error`, `404 not_found`, `429 too_many_attempts` (com `Retry-After`).
+## Alertas por e-mail
+
+Um e-mail quando um incidente **abre** (2 falhas consecutivas) e outro quando é **resolvido**, com a duração; nunca um por
+checagem. Provedor: Resend (API HTTPS). A fila é uma tabela do próprio PostgreSQL (outbox): sobrevive a restart e a falha do
+provedor, tem retentativas com limite, e não duplica nem com duas instâncias. O e-mail nunca contém URL, cookie, token ou stack.
+
+```bash
+ALERT_DELIVERY=off      # padrão: nada é criado nem enviado
+ALERT_DELIVERY=log      # desenvolvimento: o e-mail renderizado vai só para o log
+ALERT_DELIVERY=email    # exige ALERT_EMAIL_TO, ALERT_EMAIL_FROM e RESEND_API_KEY
+npm run alerts -- status                 # situação da outbox
+npm run alerts -- test-send --confirm    # envia UM e-mail de teste pelo provedor real
+```
+
+Tudo (funcionamento, configuração, como verificar um envio real sem disparar e-mails nos testes, operação e limitações) está em
+**[docs/ALERTS.md](docs/ALERTS.md)**. A suíte de testes nunca envia e-mail.
 
 ## Autenticação
 
@@ -157,43 +171,35 @@ para outro serviço público) não é detectável, e não é o objetivo desta de
 O scheduler não depende de visitas à API. É um loop (`setInterval`) iniciado em `server.ts`, no mesmo processo do Fastify:
 
 1. A cada `SCHEDULER_TICK_MS` (5 s) executa `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING`,
-   que escolhe os monitores com `next_check_at <= now()` e já reagenda `next_check_at = agora + intervalo`.
-2. Checa cada um (até `SCHEDULER_CONCURRENCY` por ciclo) e grava resultado, estado e incidente numa transação.
+   que escolhe os monitores com `next_check_at <= now()` **e já os reagenda** na mesma operação, só para as vagas livres
+   (`SCHEDULER_CONCURRENCY`, padrão 10).
+2. Cada checagem roda na sua vaga; ao terminar, a vaga é reutilizada na hora. Uma checagem lenta nunca atrasa as demais.
+3. O resultado é gravado numa transação que trava a linha do monitor, grava o histórico (com o horário em que a checagem
+   **começou**) e aplica estado/incidente.
 
-O agendamento fica no banco: reinício retoma o que estiver vencido, e várias instâncias não duplicam checagens.
-Verificado com PostgreSQL real: 2 instâncias simultâneas, intervalo de 2 s → 5 checagens por monitor em 10 s e
-espaçamento mínimo de 2,00 s. Com `SCHEDULER_ENABLED=false` o processo só serve a API (útil para separar API e worker).
+Garantias (todas cobertas por testes com PostgreSQL real, em `test/scheduler.integration.test.ts` e `test/recorder.integration.test.ts`):
 
-### Hospedagem: premissa Render
+- **Múltiplas instâncias** (inclusive a sobreposição dos deploys sem downtime): cada monitor é checado por uma instância só.
+  O teste força a janela de corrida e falha se o `SKIP LOCKED` for removido.
+- **Reinício:** o agendamento está no banco. Um monitor vencido há 1 hora recebe **uma** checagem, não uma por intervalo perdido.
+- **Banco fora:** o processo não cai; registra o erro, tenta no próximo ciclo e o `/health` responde 503 (`scheduler: "stalled"`).
+- **Queda no meio de uma checagem ou falha ao gravar:** a checagem é perdida, nunca repetida nem duplicada.
+- **Resultado atrasado ou obsoleto** (monitor pausado, excluído ou com URL editada durante a checagem; resultado que chega
+  depois de um mais novo): não altera estado, não abre nem fecha incidente. Duas checagens simultâneas do mesmo monitor jamais
+  geram dois incidentes abertos (índice único parcial no banco).
+- **Intervalo > timeout:** o intervalo mínimo aceito é sempre maior que o timeout, então a checagem anterior termina antes da próxima.
+- **Retenção:** `CHECK_RETENTION_DAYS` (30) apaga checagens antigas a cada hora, em lotes (≈ 168 bytes por checagem).
 
-A hospedagem não foi definida na conversa; assumi **Render**. Precisa ser um **processo sempre ligado**
-(web service ou background worker). Plataformas serverless (ex.: Vercel Functions) não servem para o scheduler.
+### Hospedagem
 
-Configuração: build `npm ci && npm run build`; pre-deploy `npm run db:deploy`; start `npm start`;
-`NODE_ENV=production`, `DATABASE_URL` (Postgres da Render), `HOST=0.0.0.0`, health check em `/health`.
-Mantenha **uma** instância enquanto não houver necessidade de mais (o `SKIP LOCKED` permite escalar depois).
-
-### Limitações do plano gratuito (fonte: https://render.com/docs/free, consultada em 2026-10-26)
-
-- **Dorme após 15 min sem requisições de entrada.** O loop do scheduler **para** (não conta como tráfego), e voltar
-  leva cerca de 1 minuto. Enquanto dorme, o Pulse não checa nada: um site pode cair e ninguém é notificado,
-  e o histórico terá buracos. Isso inviabiliza monitoramento confiável no plano gratuito.
-- **Contornar com ping externo em `/health` a cada < 15 min mantém acordado**, mas é paliativo: depende de um
-  terceiro, e reinícios "a qualquer momento" ainda causam lacunas curtas.
-- **750 horas/mês por workspace**: cobre uma instância 24 h/dia; acabando, todos os serviços gratuitos são suspensos até o mês seguinte.
-- **Reinícios a qualquer momento** e filesystem efêmero (o Pulse não usa disco local).
-- **Postgres gratuito expira 30 dias após a criação** (14 dias de carência antes de apagar), com 1 GB, sem backups e
-  sem pool de conexões. O histórico seria perdido.
-- Workers e cron jobs **não** têm instância gratuita; só web services, Postgres, Key Value e sites estáticos.
-- Suspensão possível por alto tráfego de saída. Cada checagem baixa só os cabeçalhos, então o consumo é baixo.
-
-**Efeito na frequência:** no gratuito, o intervalo efetivo é "o que o ping externo mantiver acordado", sem garantia, e
-um intervalo de checagem menor que o tempo de despertar (~1 min) não faz sentido. Para monitoramento real, use um
-plano pago (instância sempre ligada) e um Postgres pago; aí `MIN_INTERVAL_SECONDS=30` é viável (tick de 5 s, uma
-checagem por conexão curta). Recomendo reavaliar preços e limites no painel antes de contratar.
+Veja **[docs/DEPLOY.md](docs/DEPLOY.md)**: estratégia (Render pago + Postgres gerenciado, ≈ US$ 13,30/mês), custos
+comparados com alternativas, dimensionamento medido, limitações, procedimento para criar e recuperar o administrador em
+produção e checklist de deploy. **Nada foi contratado nem implantado.**
+O plano gratuito da Render **não serve**: o serviço dorme após 15 min sem requisições (o scheduler para) e o Postgres gratuito expira em 30 dias.
 
 ## Variáveis de ambiente
 
 Ver `.env.example`. Obrigatória: `DATABASE_URL`. Demais têm padrão seguro (`NODE_ENV=production`,
-`SESSION_COOKIE_SAMESITE=strict`, `CHECK_TIMEOUT_MS=10000`, `MIN_INTERVAL_SECONDS=30`). Em produção defina também
+`SESSION_COOKIE_SAMESITE=strict`, `CHECK_TIMEOUT_MS=10000`, `MIN_INTERVAL_SECONDS=30`, `MAX_MONITORS=100`,
+`CHECK_RETENTION_DAYS=30`, `ALERT_DELIVERY=off`). Em produção defina também
 `TRUST_PROXY_HOPS` e, se houver frontend, `CORS_ALLOWED_ORIGIN`.

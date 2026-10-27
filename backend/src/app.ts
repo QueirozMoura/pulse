@@ -7,7 +7,7 @@ import type { Config } from "./config.js";
 import type { Db } from "./lib/db.js";
 import { AppError } from "./lib/errors.js";
 import { loginRoute, sessionRoutes } from "./routes/auth.js";
-import { healthRoutes } from "./routes/health.js";
+import { healthRoutes, type SchedulerStatus } from "./routes/health.js";
 import { monitorRoutes } from "./routes/monitors.js";
 import { publicRoutes } from "./routes/public.js";
 
@@ -25,13 +25,19 @@ declare module "fastify" {
   }
 }
 
-export function buildApp(config: Config, db: Db): FastifyInstance {
+export interface AppDeps {
+  /** Estado do scheduler para o /health. Padrão: desabilitado. */
+  schedulerStatus?: () => SchedulerStatus;
+}
+
+export function buildApp(config: Config, db: Db, deps: AppDeps = {}): FastifyInstance {
   const app = Fastify({
     logger: {
       level: config.LOG_LEVEL,
       redact: ["req.headers.authorization", "req.headers.cookie", "res.headers[set-cookie]"],
     },
     bodyLimit: 16 * 1024,
+    forceCloseConnections: "idle", // shutdown não fica preso em conexões keep-alive ociosas
     // Só confia nos N proxies mais próximos; X-Forwarded-For forjado pelo cliente fica fora.
     trustProxy: config.TRUST_PROXY_HOPS > 0 ? (_addr: string, hop: number) => hop < config.TRUST_PROXY_HOPS : false,
   });
@@ -51,6 +57,8 @@ export function buildApp(config: Config, db: Db): FastifyInstance {
     }
   });
 
+  // Só JSON. Remove o parser padrão de text/plain, que um formulário cross-site consegue enviar sem preflight.
+  app.removeAllContentTypeParsers();
   // JSON vazio (ex.: POST /monitors/:id/pause sem corpo) é aceito como "sem corpo".
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
     if (body === "") return done(null, undefined);
@@ -71,31 +79,44 @@ export function buildApp(config: Config, db: Db): FastifyInstance {
     });
   }
 
+  // Todo corpo de erro tem o mesmo formato: { error, message, requestId, issues? }.
+  // `error` é um código estável para o cliente; `message` é texto seguro; detalhes internos só vão para o log.
+  const STATUS_CODES: Record<number, string> = {
+    400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found",
+    405: "method_not_allowed", 413: "payload_too_large", 415: "unsupported_media_type", 429: "too_many_requests",
+  };
+  const body = (req: { id: string }, error: string, message: string, extra: object = {}) => ({
+    error, message, requestId: req.id, ...extra,
+  });
+
+  app.addHook("onRequest", async (req, reply) => {
+    reply.header("x-request-id", req.id);
+    reply.header("x-content-type-options", "nosniff");
+  });
+
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof AppError) {
-      return reply.code(err.statusCode).headers(err.headers).send({ error: err.code, message: err.message });
+      return reply.code(err.statusCode).headers(err.headers).send(body(req, err.code, err.message));
     }
     if (err instanceof ZodError) {
-      return reply.code(400).send({
-        error: "validation_error",
-        message: "Dados inválidos",
-        issues: err.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
-      });
+      return reply.code(400).send(
+        body(req, "validation_error", "Dados inválidos", {
+          issues: err.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+        }),
+      );
     }
     const status = (err as { statusCode?: number }).statusCode;
     if (status && status >= 400 && status < 500) {
-      return reply.code(status).send({ error: "bad_request", message: "Requisição inválida" });
+      return reply.code(status).send(body(req, STATUS_CODES[status] ?? "bad_request", "Requisição inválida"));
     }
     req.log.error({ err }, "unhandled error"); // detalhes só no log
-    return reply.code(500).send({ error: "internal_error", message: "Erro interno" });
+    return reply.code(500).send(body(req, "internal_error", "Erro interno"));
   });
 
-  app.setNotFoundHandler((_req, reply) =>
-    reply.code(404).send({ error: "not_found", message: "Rota não encontrada" }),
-  );
+  app.setNotFoundHandler((req, reply) => reply.code(404).send(body(req, "not_found", "Rota não encontrada")));
 
   // --- Rotas públicas (sem sessão) ---
-  healthRoutes(app, db);
+  healthRoutes(app, db, deps.schedulerStatus ?? (() => "disabled"));
   publicRoutes(app, db);
   app.register(async (scope) => {
     scope.addHook("onSend", async (_req, reply) => void reply.header("cache-control", "no-store"));
@@ -113,7 +134,11 @@ export function buildApp(config: Config, db: Db): FastifyInstance {
     priv.addHook("onRequest", guards.csrf);
     priv.addHook("onSend", async (_req, reply) => void reply.header("cache-control", "no-store"));
     sessionRoutes(priv, db, config);
-    monitorRoutes(priv, db, config.MIN_INTERVAL_SECONDS);
+    monitorRoutes(priv, db, {
+      minIntervalSeconds: config.MIN_INTERVAL_SECONDS,
+      checkTimeoutMs: config.CHECK_TIMEOUT_MS,
+      maxMonitors: config.MAX_MONITORS,
+    });
   });
 
   return app;

@@ -55,6 +55,7 @@ model Incident {
   resolvedAt DateTime? @map("resolved_at")
 
   monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  alerts  AlertEvent[]
 
   @@index([monitorId, startedAt(sort: Desc)])
   @@map("incidents")
@@ -95,4 +96,40 @@ model LoginFailure {
   @@index([createdAt])
   @@index([ip, createdAt])
   @@map("login_failures")
+}
+
+enum AlertKind {
+  OPENED
+  RESOLVED
+}
+
+enum AlertStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// Outbox de alertas: uma linha por (incidente, tipo), criada na MESMA transação que abre/resolve o incidente.
+// O envio acontece depois, fora do scheduler; esta tabela é a fonte da verdade (sobrevive a restart e a falha do provedor).
+model AlertEvent {
+  id                String      @id @default(uuid()) @db.Uuid
+  incidentId        String      @map("incident_id") @db.Uuid
+  kind              AlertKind
+  status            AlertStatus @default(PENDING)
+  attempts          Int         @default(0)
+  nextAttemptAt     DateTime    @default(now()) @map("next_attempt_at")
+  // Posse temporária (lease) enquanto uma instância envia; expira sozinha se o processo morrer.
+  lockedUntil       DateTime?   @map("locked_until")
+  lastAttemptAt     DateTime?   @map("last_attempt_at")
+  // Categoria sanitizada do último erro (timeout, rate_limited...). Nunca a mensagem do provedor.
+  lastErrorKind     String?     @map("last_error_kind")
+  providerMessageId String?     @map("provider_message_id")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  sentAt            DateTime?   @map("sent_at")
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentId, kind])
+  @@index([status, nextAttemptAt])
+  @@map("alert_events")
 }

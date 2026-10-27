@@ -122,7 +122,7 @@ describe.skipIf(!TEST_DB_URL)("administração de monitores (PostgreSQL real)", 
   });
 
   describe("pausa e retomada", () => {
-    it("pausar tira o monitor do agendamento e do status público; retomar devolve", async () => {
+    it("pausar tira o monitor do agendamento e o mostra como 'paused' no público; retomar devolve", async () => {
       const m = await create();
       const paused = await call("POST", `/monitors/${m.id}/pause`);
       expect(paused.statusCode).toBe(200);
@@ -135,7 +135,7 @@ describe.skipIf(!TEST_DB_URL)("administração de monitores (PostgreSQL real)", 
       expect(claimed).toHaveLength(0);
 
       const pub = await c.app.inject({ method: "GET", url: "/public/status" });
-      expect(pub.json().monitors).toHaveLength(0);
+      expect(pub.json().monitors.map((x: { state: string }) => x.state)).toEqual(["paused"]);
 
       const resumed = await call("POST", `/monitors/${m.id}/resume`);
       expect(resumed.json().active).toBe(true);

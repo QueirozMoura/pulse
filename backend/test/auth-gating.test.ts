@@ -8,7 +8,14 @@ const env = { DATABASE_URL: "postgresql://x@localhost/x", LOG_LEVEL: "silent" };
 const stubDb = { session: { findUnique: async () => null } } as unknown as Db;
 
 /** Rotas que podem ser acessadas sem login. Qualquer rota nova fora desta lista TEM que exigir sessão. */
-const PUBLIC = new Set(["GET /health", "GET /public/status", "GET /public/monitors/:id/history", "POST /auth/login"]);
+const PUBLIC = new Set([
+  "GET /health",
+  "GET /public/status",
+  "GET /public/monitors/:id",
+  "GET /public/monitors/:id/history",
+  "GET /public/incidents",
+  "POST /auth/login",
+]);
 
 describe("nenhuma rota administrativa é acessível sem login", () => {
   const app = buildApp(loadConfig({ ...env, NODE_ENV: "production" }), stubDb);
@@ -52,7 +59,7 @@ describe("nenhuma rota administrativa é acessível sem login", () => {
 
   it("401 não revela nada além do necessário", async () => {
     const res = await app.inject({ method: "GET", url: "/monitors" });
-    expect(res.json()).toEqual({ error: "unauthorized", message: "Autenticação necessária" });
+    expect(res.json()).toEqual({ error: "unauthorized", message: "Autenticação necessária", requestId: expect.any(String) });
     expect(res.headers["cache-control"]).toBe("no-store");
   });
 });
