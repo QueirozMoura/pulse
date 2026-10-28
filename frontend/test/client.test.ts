@@ -40,7 +40,7 @@ describe("cliente HTTP: cookies e CSRF conforme o API.md", () => {
     mockFetch(() => json(200, { monitors: [] }));
     await adminApi.list();
     mockFetch((_u, init) => (init.method === "DELETE" ? new Response(null, { status: 204 }) : json(200, {})));
-    await adminApi.create({ name: "a", url: "https://x.example.com", intervalSeconds: 60 });
+    await adminApi.create({ name: "a", url: "https://x.example.com", intervalSeconds: 60, publicVisible: true });
     await adminApi.update("id1", { name: "b" });
     await adminApi.pause("id1");
     await adminApi.resume("id1");
@@ -55,10 +55,10 @@ describe("cliente HTTP: cookies e CSRF conforme o API.md", () => {
     csrf.set("t");
     mockFetch(() => json(200, {}));
     await adminApi.pause("id1");
-    await adminApi.create({ name: "a", url: "https://x.example.com", intervalSeconds: 30 });
+    await adminApi.create({ name: "a", url: "https://x.example.com", intervalSeconds: 30, publicVisible: true });
     expect(calls[0]!.init.body).toBeUndefined();
     expect(headersOf(calls[1]!)["content-type"]).toBe("application/json");
-    expect(JSON.parse(calls[1]!.init.body as string)).toEqual({ name: "a", url: "https://x.example.com", intervalSeconds: 30 });
+    expect(JSON.parse(calls[1]!.init.body as string)).toEqual({ name: "a", url: "https://x.example.com", intervalSeconds: 30, publicVisible: true });
   });
 
   it("logout limpa o token da memória só depois do sucesso", async () => {

@@ -16,6 +16,7 @@ function mon(over: Partial<AdminMonitor> & { name: string }): AdminMonitor {
     url: `https://${over.name.toLowerCase().replace(/\W+/g, "")}.example.com/`,
     intervalSeconds: 60,
     active: true,
+    publicVisible: true,
     status: "OPERATIONAL",
     consecutiveFailures: 0,
     nextCheckAt: new Date(Date.now() + 30_000).toISOString(),
@@ -222,7 +223,7 @@ describe("cadastro e edição", () => {
     await ui.click(within(dlg).getByRole("button", { name: "Cadastrar monitor" }));
     await screen.findByText("«Documentação» foi cadastrado.");
     const sent = api.last("POST /monitors")!;
-    expect(sent.body).toEqual({ name: "Documentação", url: "https://docs.example.com/status", intervalSeconds: 300 });
+    expect(sent.body).toEqual({ name: "Documentação", url: "https://docs.example.com/status", intervalSeconds: 300, publicVisible: true });
     expect(sent.headers["x-csrf-token"]).toBe("csrf-1");
     expect(sent.credentials).toBe("include");
     await waitFor(() => expect(api.count("GET /monitors")).toBeGreaterThanOrEqual(2));
@@ -310,6 +311,48 @@ describe("cadastro e edição", () => {
     await screen.findByText("«Site novo» foi atualizado.");
     expect(api.last("PATCH /monitors/m-site")).toMatchObject({ body: { name: "Site novo" } });
     expect(api.last("PATCH /monitors/m-site")?.headers["x-csrf-token"]).toBe("csrf-1");
+  });
+
+  it("“Exibir na página pública” vem marcado por padrão e vai desmarcado no cadastro quando o administrador quer um monitor interno", async () => {
+    const api = loggedIn({ "POST /monitors": (c) => json(201, mon({ name: "Interno", id: "novo-2", publicVisible: (c.body as { publicVisible: boolean }).publicVisible })) });
+    renderAdmin();
+    const { ui, dlg } = await openNew();
+    const box = within(dlg).getByRole("checkbox", { name: "Exibir na página pública" });
+    expect(box).toBeChecked();
+    await ui.type(within(dlg).getByLabelText("Nome"), "Interno");
+    await ui.clear(within(dlg).getByLabelText("URL a monitorar"));
+    await ui.type(within(dlg).getByLabelText("URL a monitorar"), "https://interno.example.com/");
+    await ui.click(box);
+    await ui.click(within(dlg).getByRole("button", { name: "Cadastrar monitor" }));
+    await screen.findByText("«Interno» foi cadastrado.");
+    expect(api.last("POST /monitors")!.body).toMatchObject({ name: "Interno", publicVisible: false });
+  });
+
+  it("edição mostra a opção refletindo o monitor e envia só publicVisible quando é só ela que muda", async () => {
+    const hidden = mon({ name: "Site", id: "m-site", publicVisible: false });
+    const api = loggedIn({
+      "GET /monitors": { monitors: [hidden] },
+      "PATCH /monitors/m-site": (c) => json(200, mon({ name: "Site", id: "m-site", publicVisible: (c.body as { publicVisible: boolean }).publicVisible })),
+    });
+    renderAdmin();
+    const ui = user();
+    await screen.findByRole("article", { name: "Site" });
+    expect(within(row("Site")).getByText("Interno")).toBeInTheDocument();
+    await ui.click(screen.getByRole("button", { name: "Editar Site" }));
+    const dlg = await screen.findByRole("dialog");
+    const box = within(dlg).getByRole("checkbox", { name: "Exibir na página pública" });
+    expect(box).not.toBeChecked();
+    await ui.click(box);
+    await ui.click(within(dlg).getByRole("button", { name: "Salvar alterações" }));
+    await screen.findByText("«Site» foi atualizado.");
+    expect(api.last("PATCH /monitors/m-site")!.body).toEqual({ publicVisible: true });
+  });
+
+  it("monitores públicos não ganham o selo “Interno”", async () => {
+    loggedIn();
+    renderAdmin();
+    await screen.findByRole("article", { name: "Site" });
+    expect(within(row("Site")).queryByText("Interno")).toBeNull();
   });
 
   it("Esc fecha o formulário sem enviar nada", async () => {

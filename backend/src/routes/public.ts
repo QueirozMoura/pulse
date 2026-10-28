@@ -31,7 +31,8 @@ export function publicRoutes(app: FastifyInstance, db: Db, opts: { cache: Public
   const PUBLIC_CACHE = cacheControl;
   async function loadMonitors(onlyId?: string): Promise<PublicMonitor[]> {
     const monitors = await db.monitor.findMany({
-      where: onlyId ? { id: onlyId } : undefined,
+      // Monitores internos (publicVisible=false) nunca saem daqui: nem na lista, nem no detalhe, nem nas métricas.
+      where: { publicVisible: true, ...(onlyId && { id: onlyId }) },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       select: {
         id: true,
@@ -113,7 +114,7 @@ export function publicRoutes(app: FastifyInstance, db: Db, opts: { cache: Public
     const { id } = idParams.parse(req.params);
     const { limit, cursor } = historyQuery.parse(req.query);
     const body = await cache.wrap(req.url, async () => {
-    const exists = await db.monitor.findUnique({ where: { id }, select: { id: true } });
+    const exists = await db.monitor.findFirst({ where: { id, publicVisible: true }, select: { id: true } });
     if (!exists) throw notFound("Monitor não encontrado");
 
     const rows = await db.checkResult.findMany({
@@ -148,6 +149,7 @@ export function publicRoutes(app: FastifyInstance, db: Db, opts: { cache: Public
     const body = await cache.wrap(req.url, async () => {
     const rows = await db.incident.findMany({
       where: {
+        monitor: { publicVisible: true },
         ...(monitorId && { monitorId }),
         ...(status === "open" && { resolvedAt: null }),
         ...(status === "resolved" && { resolvedAt: { not: null } }),

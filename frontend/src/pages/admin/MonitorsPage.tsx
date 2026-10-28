@@ -170,6 +170,7 @@ export function MonitorsPage() {
                       </div>
                       <div className="rowcard__state">
                         <StateBadge state={state} />
+                        {mon.publicVisible === false && <small className="rowcard__flag" title="Fora da página pública e das métricas públicas">Interno</small>}
                         {state === "operational" && mon.consecutiveFailures > 0 && <small className="rowcard__warn">{plural(mon.consecutiveFailures, "falha recente", "falhas seguidas")}</small>}
                       </div>
                     </div>

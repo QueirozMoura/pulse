@@ -62,7 +62,7 @@ por tempo indeterminado (não trate o conteúdo como estrutura). `limit` fora do
 |---|---|---|
 | `GET /health/live` | público | O processo está de pé (não consulta o banco) |
 | `GET /health` | público | Saúde do Pulse (banco + scheduler) e batimento do worker |
-| `GET /public/status` | público | Estado atual de todos os monitores |
+| `GET /public/status` | público | Estado atual dos monitores públicos (`publicVisible: true`) |
 | `GET /public/monitors/:id` | público | Um monitor (mesmo formato da lista) |
 | `GET /public/monitors/:id/history` | público | Checagens recentes, paginado |
 | `GET /public/incidents` | público | Incidentes abertos e resolvidos, paginado |
@@ -746,7 +746,7 @@ cache-control: no-store
 Todas exigem sessão; as que alteram dados exigem também `X-CSRF-Token`. Respondem com a URL monitorada e dados internos,
 por isso **nunca** são públicas.
 
-`Monitor` administrativo: `{ id, name, url, intervalSeconds, active, status: "OPERATIONAL" | "UNAVAILABLE", consecutiveFailures, nextCheckAt, lastCheckedAt | null, createdAt }`.
+`Monitor` administrativo: `{ id, name, url, intervalSeconds, active, publicVisible, status: "OPERATIONAL" | "UNAVAILABLE", consecutiveFailures, nextCheckAt, lastCheckedAt | null, createdAt }`.
 (`status` aqui é o estado interno; para exibição ao público use o `state` das rotas `/public`.)
 
 Regras de entrada:
@@ -756,10 +756,11 @@ Regras de entrada:
 | `name` | string, 1–100 caracteres (espaços nas pontas são removidos) |
 | `url` | **HTTPS** obrigatório, até 2048 caracteres, sem usuário/senha, sem `localhost`/sufixos internos, sem IP privado/reservado em qualquer notação. Normalizada (ex.: `https://example.com` → `https://example.com/`). Mesmo uma URL aceita aqui é revalidada a cada conexão (DNS que aponta para a rede interna é bloqueado; redirects são seguidos até 5 vezes, validando cada destino) |
 | `intervalSeconds` | inteiro entre `max(MIN_INTERVAL_SECONDS, CHECK_TIMEOUT_MS/1000 + 1)` (padrão **30**) e **86400** |
+| `publicVisible` | booleano, opcional, padrão **`true`**. `false` = monitor **interno**: continua sendo checado e aparece nas rotas administrativas, mas some de `/public/status`, das métricas e incidentes públicos, e `GET /public/monitors/:id` e `/history` respondem `404` (idêntico a um id inexistente). Alterar não muda pausa, intervalo nem agendamento |
 
 ### `POST /monitors`
 
-**Entrada:** `{ name, url, intervalSeconds }` (todos obrigatórios; campos extras → `400`). **Resposta `201`:** `Monitor` administrativo.
+**Entrada:** `{ name, url, intervalSeconds, publicVisible? }` (`name`, `url` e `intervalSeconds` obrigatórios; `publicVisible` opcional, padrão `true`; campos extras → `400`). **Resposta `201`:** `Monitor` administrativo.
 A primeira checagem acontece em poucos segundos.
 
 | Erro | Quando |
@@ -1041,7 +1042,7 @@ cache-control: no-store
 
 ### `PATCH /monitors/:id`
 
-**Entrada:** ao menos um entre `name`, `url`, `intervalSeconds` (mesmas regras; qualquer outro campo → `400`). **Resposta `200`:** `Monitor` administrativo atualizado.
+**Entrada:** ao menos um entre `name`, `url`, `intervalSeconds`, `publicVisible` (mesmas regras; qualquer outro campo → `400`). **Resposta `200`:** `Monitor` administrativo atualizado.
 Trocar a `url` agenda uma checagem imediata. Reduzir o intervalo antecipa a próxima checagem. Resultados de uma checagem que
 estava em andamento com a URL antiga são descartados. Erros: `400`, `401`, `403`, `404`.
 

@@ -63,6 +63,15 @@ curl -s -b jar -X POST $API/monitors -H 'content-type: application/json' -H "x-c
 
 (Em produção o cookie é `Secure`; o `curl -c/-b` só o reenvia por HTTPS.) O frontend fará o mesmo com `credentials: "include"`.
 
+## Monitores internos (visibilidade pública)
+
+Cada monitor tem a opção **“Exibir na página pública”** (`publicVisible`, padrão `true`). Desmarcada, o monitor é *interno*:
+- some de `/public/status` (lista, contagens e disponibilidade geral), de `/public/incidents`, e `/public/monitors/:id` e `/history` respondem `404`;
+- continua sendo checado (agendamento, pausa e retenção não mudam), mantém o histórico e aparece no painel com o selo “Interno”;
+- **alertas por e-mail não mudam**: a opção controla só a exposição pública.
+
+Testes: `test/monitor-visibility.integration.test.ts` (PostgreSQL real).
+
 ## Alertas por e-mail
 
 Um e-mail quando um incidente **abre** (2 falhas consecutivas) e outro quando é **resolvido**, com a duração; nunca um por

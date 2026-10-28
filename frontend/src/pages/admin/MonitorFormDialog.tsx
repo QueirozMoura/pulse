@@ -40,6 +40,8 @@ function FormBody({ target, onClose, onSaved, onSessionProblem }: Omit<Props, "t
   const minInterval = (auth.status === "authenticated" && auth.user.limits?.minIntervalSeconds) || DEFAULT_MIN_INTERVAL;
   const presets = PRESETS.filter((s) => s >= minInterval);
   const [interval, setIntervalSeconds] = useState(editing?.intervalSeconds ?? (presets.find((s) => s >= 60) ?? presets[0] ?? minInterval));
+  // Padrão true: preserva o comportamento dos monitores existentes (e de servidores antigos, que não enviam o campo).
+  const [publicVisible, setPublicVisible] = useState(editing?.publicVisible ?? true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Described | null>(null);
   const [local, setLocal] = useState<Record<string, string>>({});
@@ -57,7 +59,7 @@ function FormBody({ target, onClose, onSaved, onSessionProblem }: Omit<Props, "t
     setLocal(problems);
     if (Object.keys(problems).length > 0) return;
 
-    const input: MonitorInput = { name: name.trim(), url: url.trim(), intervalSeconds: interval };
+    const input: MonitorInput = { name: name.trim(), url: url.trim(), intervalSeconds: interval, publicVisible };
     // Na edição só vai o que mudou (PATCH exige ao menos um campo).
     const patch: Partial<MonitorInput> = editing
       ? Object.fromEntries(Object.entries(input).filter(([k, v]) => (editing as unknown as Record<string, unknown>)[k] !== v))
@@ -96,7 +98,7 @@ function FormBody({ target, onClose, onSaved, onSessionProblem }: Omit<Props, "t
         <label htmlFor="mf-name">Nome</label>
         <input id="mf-name" value={name} maxLength={100} data-autofocus onChange={(e) => setName(e.target.value)} aria-invalid={Boolean(fieldError("name"))} aria-describedby={fieldError("name") ? "mf-name-err" : undefined} />
         {fieldError("name") && <p id="mf-name-err" className="field__error">{fieldError("name")}</p>}
-        <p className="field__hint">Aparece na página pública de status.</p>
+        <p className="field__hint">Se estiver exibido, o nome aparece na página pública de status.</p>
       </div>
       <div className="field">
         <label htmlFor="mf-url">URL a monitorar</label>
@@ -114,6 +116,16 @@ function FormBody({ target, onClose, onSaved, onSessionProblem }: Omit<Props, "t
           {minInterval >= 600 ? " As checagens rodam em rodadas agendadas: o horário exato pode atrasar alguns minutos." : ""}
         </p>
         {fieldError("intervalSeconds") && <p id="mf-int-err" className="field__error">{fieldError("intervalSeconds")}</p>}
+      </div>
+
+      <div className="field field--check">
+        <label htmlFor="mf-public" className="check">
+          <input id="mf-public" type="checkbox" checked={publicVisible} onChange={(e) => setPublicVisible(e.target.checked)} aria-describedby="mf-public-hint" />
+          <span>Exibir na página pública</span>
+        </label>
+        <p id="mf-public-hint" className="field__hint">
+          Desmarque para um monitor interno: ele continua sendo checado e aparece aqui no painel, mas some da página pública, da disponibilidade geral e dos incidentes públicos.
+        </p>
       </div>
 
       <div className="modal__actions">

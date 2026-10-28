@@ -31,6 +31,9 @@
 .rowcard__name { font-size: 1.25rem; font-stretch: 108%; overflow-wrap: anywhere; }
 .rowcard__url { color: var(--ink-3); font-size: 0.92rem; overflow-wrap: anywhere; }
 .rowcard__state { display: grid; justify-items: start; gap: 0.2rem; }
+.rowcard__flag { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; border: 1px solid var(--rim); color: var(--ink-2); font-weight: 700; font-size: 0.82rem; }
+.check { display: inline-flex; align-items: center; gap: 0.6rem; font-weight: 700; cursor: pointer; }
+.check input { width: 1.15rem; height: 1.15rem; }
 .rowcard__warn { color: var(--warn); font-weight: 700; }
 .rowcard__meta { display: flex; flex-wrap: wrap; gap: 0.4rem 1.6rem; margin: 0; }
 .rowcard__meta > div { min-width: 5rem; }

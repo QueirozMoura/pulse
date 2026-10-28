@@ -20,9 +20,10 @@ export function monitorRoutes(
   const name = z.string().trim().min(1).max(100);
   const intervalSeconds = z.number().int().min(minIntervalSeconds).max(MAX_INTERVAL_SECONDS);
 
-  const createSchema = z.object({ name, url: monitorUrlSchema, intervalSeconds }).strict();
+  const publicVisible = z.boolean();
+  const createSchema = z.object({ name, url: monitorUrlSchema, intervalSeconds, publicVisible: publicVisible.default(true) }).strict();
   const updateSchema = z
-    .object({ name: name.optional(), url: monitorUrlSchema.optional(), intervalSeconds: intervalSeconds.optional() })
+    .object({ name: name.optional(), url: monitorUrlSchema.optional(), intervalSeconds: intervalSeconds.optional(), publicVisible: publicVisible.optional() })
     .strict()
     .refine((v) => Object.keys(v).length > 0, "Informe ao menos um campo");
   const params = z.object({ id: z.uuid() });
@@ -87,7 +88,7 @@ export function monitorRoutes(
 }
 
 function toDto(m: {
-  id: string; name: string; url: string; intervalSeconds: number; active: boolean; status: string;
+  id: string; name: string; url: string; intervalSeconds: number; active: boolean; publicVisible: boolean; status: string;
   consecutiveFailures: number; nextCheckAt: Date; lastCheckedAt: Date | null; createdAt: Date;
 }) {
   return {
@@ -96,6 +97,7 @@ function toDto(m: {
     url: m.url,
     intervalSeconds: m.intervalSeconds,
     active: m.active,
+    publicVisible: m.publicVisible,
     status: m.status,
     consecutiveFailures: m.consecutiveFailures,
     nextCheckAt: m.nextCheckAt,

@@ -72,6 +72,8 @@ export interface AdminMonitor {
   url: string;
   intervalSeconds: number;
   active: boolean;
+  /** false = monitor interno: fora da página pública e das métricas públicas, mas checado e visível no painel. */
+  publicVisible: boolean;
   status: "OPERATIONAL" | "UNAVAILABLE";
   consecutiveFailures: number;
   nextCheckAt: string;
@@ -83,6 +85,7 @@ export interface MonitorInput {
   name: string;
   url: string;
   intervalSeconds: number;
+  publicVisible: boolean;
 }
 
 export interface ValidationIssue {

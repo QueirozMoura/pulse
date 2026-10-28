@@ -112,6 +112,10 @@ Faça nesta ordem. **Nada abaixo foi executado por mim**; são os passos exatos 
    read -rs DATABASE_URL && export DATABASE_URL     # cole a URL DIRECT; sem eco, fora do histórico
    npm run db:deploy
    ```
+   > **Atualizando uma instalação existente:** a migration `20261028050000_monitor_public_visible` só **adiciona** a coluna
+   > `monitors.public_visible BOOLEAN NOT NULL DEFAULT true`: nenhuma tabela é apagada ou recriada e todos os monitores atuais
+   > continuam públicos. Aplique-a **antes** de publicar o código novo (o código novo lê a coluna; o código antigo ignora-a, então
+   > a ordem migration → deploy é segura). Depois, em **Editar**, desmarque “Exibir na página pública” nos monitores internos.
 4. Crie o administrador (pede a senha duas vezes, sem eco), com a mesma `DATABASE_URL` ainda exportada:
    ```bash
    npm run admin -- create --username seu-usuario

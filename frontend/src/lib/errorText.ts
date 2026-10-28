@@ -17,7 +17,7 @@ export interface Described {
   csrf: boolean;
 }
 
-const FIELD_LABEL: Record<string, string> = { name: "Nome", url: "URL", intervalSeconds: "Intervalo" };
+const FIELD_LABEL: Record<string, string> = { name: "Nome", url: "URL", intervalSeconds: "Intervalo", publicVisible: "Exibir na página pública" };
 
 /** Traduz erros do contrato (API.md §6) e falhas de rede em mensagens que dizem o que houve e o que fazer. */
 export function describeError(err: unknown, ctx: "login" | "admin" = "admin"): Described {

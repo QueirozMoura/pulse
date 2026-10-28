@@ -18,6 +18,8 @@ model Monitor {
   url                 String
   intervalSeconds     Int           @map("interval_seconds")
   active              Boolean       @default(true)
+  // false = monitor interno: some da página pública, das métricas e dos incidentes públicos, mas segue checado e visível no painel.
+  publicVisible       Boolean       @default(true) @map("public_visible")
   status              MonitorStatus @default(OPERATIONAL)
   consecutiveFailures Int           @default(0) @map("consecutive_failures")
   // Agendamento vive no banco: sobrevive a restarts e permite várias instâncias.
